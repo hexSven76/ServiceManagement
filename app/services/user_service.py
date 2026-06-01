@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from sqlalchemy import select
 from ..exceptions import NotFoundError, PermissionDeniedError, ValidationError
 from ..models import Profile, RoleEnum, User

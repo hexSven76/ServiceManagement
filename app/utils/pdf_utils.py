@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
-
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
-
 from ..config import PDF_OUTPUT_DIR
 
 
