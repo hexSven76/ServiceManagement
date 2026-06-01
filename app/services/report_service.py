@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from pathlib import Path
 from sqlalchemy import select
-
 from ..exceptions import PermissionDeniedError
 from ..models import Booking, Payment, RoleEnum, User
 from ..utils.pdf_utils import generate_pdf

@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from datetime import datetime
 from sqlalchemy import select, and_
-
 from ..exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from ..models import RoleEnum, Service, SlotStatusEnum, TimeSlot, User
 from .base import BaseService
