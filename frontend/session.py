@@ -8,17 +8,22 @@ def init_session():
     if "role" not in st.session_state:
         st.session_state.role = None
 
+    if "username" not in st.session_state:
+        st.session_state.username = None
+
     if "is_logged_in" not in st.session_state:
         st.session_state.is_logged_in = False
 
 
-def login_user(user_id: int, role: str):
+def login_user(user_id: int, role: str, username: str):
     st.session_state.user_id = user_id
     st.session_state.role = role
+    st.session_state.username = username
     st.session_state.is_logged_in = True
 
 
 def logout_user():
     st.session_state.user_id = None
     st.session_state.role = None
+    st.session_state.username = None
     st.session_state.is_logged_in = False

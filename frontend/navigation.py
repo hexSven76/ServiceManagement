@@ -12,7 +12,8 @@ def render_navigation():
         render_login_page()
         return
 
-    st.sidebar.success(f"Logged in as: {st.session_state.role}")
+    st.sidebar.success(f"Logged in as: {st.session_state.username}")
+    st.sidebar.caption(f"Role: {st.session_state.role}")
 
     if st.sidebar.button("Logout"):
         logout_user()
@@ -20,11 +21,11 @@ def render_navigation():
 
     role = st.session_state.role
 
-    if role == "Admin":
+    if role == "ADMIN":
         render_admin_home()
-    elif role == "Provider":
+    elif role == "PROVIDER":
         render_provider_home()
-    elif role == "Customer":
+    elif role == "CUSTOMER":
         render_customer_home()
     else:
         st.error("Unknown user role.")
