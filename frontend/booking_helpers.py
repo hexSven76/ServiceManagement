@@ -439,3 +439,195 @@ def create_customer_booking(
         session.refresh(booking)
 
         return booking_to_dict(booking)
+
+
+def fetch_customer_bookings(customer_id: int) -> list[dict]:
+    BookingModel = get_booking_model()
+
+    with get_session() as session:
+        columns = get_model_columns(BookingModel)
+
+        customer_column_name = get_first_existing_column(
+            columns,
+            ["customer_id", "user_id"],
+        )
+
+        if customer_column_name is None:
+            raise ValueError("Booking model has no customer_id/user_id column.")
+
+        customer_column = getattr(BookingModel, customer_column_name)
+
+        bookings = (
+            session.query(BookingModel)
+            .filter(customer_column == customer_id)
+            .order_by(BookingModel.id.desc())
+            .all()
+        )
+
+        result = []
+
+        for booking in bookings:
+            booking_dict = booking_to_dict(booking)
+
+            service = getattr(booking, "service", None)
+            provider = getattr(booking, "provider", None)
+            schedule = (
+                getattr(booking, "schedule", None)
+                or getattr(booking, "slot", None)
+                or getattr(booking, "time_slot", None)
+            )
+
+            if service is not None:
+                booking_dict["service_title"] = get_first_attr(
+                    service,
+                    ["title", "name", "service_name"],
+                    f"Service #{booking_dict.get('service_id')}",
+                )
+                booking_dict["service_price"] = get_first_attr(
+                    service,
+                    ["price"],
+                    None,
+                )
+            else:
+                booking_dict["service_title"] = f"Service #{booking_dict.get('service_id')}"
+                booking_dict["service_price"] = None
+
+            if provider is not None:
+                booking_dict["provider_name"] = get_first_attr(
+                    provider,
+                    ["username", "full_name", "email"],
+                    f"Provider #{booking_dict.get('provider_id')}",
+                )
+            else:
+                booking_dict["provider_name"] = f"Provider #{booking_dict.get('provider_id')}"
+
+            if schedule is not None:
+                slot = schedule_to_dict(schedule)
+                booking_dict["slot_start"] = slot.get("start_datetime")
+                booking_dict["slot_end"] = slot.get("end_datetime")
+                booking_dict["slot_status"] = slot.get("status")
+                booking_dict["slot_is_active"] = slot.get("is_active")
+                booking_dict["slot_is_booked"] = slot.get("is_booked")
+            else:
+                booking_dict["slot_start"] = get_first_attr(
+                    booking,
+                    ["start_time", "start_datetime", "starts_at", "start"],
+                    None,
+                )
+                booking_dict["slot_end"] = get_first_attr(
+                    booking,
+                    ["end_time", "end_datetime", "ends_at", "end"],
+                    None,
+                )
+
+            booking_dict["cancel_deadline"] = get_first_attr(
+                booking,
+                ["cancel_deadline"],
+                None,
+            )
+
+            booking_dict["confirmed_at"] = get_first_attr(
+                booking,
+                ["confirmed_at"],
+                None,
+            )
+
+            booking_dict["rejected_at"] = get_first_attr(
+                booking,
+                ["rejected_at"],
+                None,
+            )
+
+            booking_dict["canceled_at"] = get_first_attr(
+                booking,
+                ["canceled_at"],
+                None,
+            )
+
+            result.append(booking_dict)
+
+        return result
+
+
+def can_customer_cancel_booking(booking: dict) -> tuple[bool, str]:
+    status = str(booking.get("status") or "").upper()
+
+    if status in ["CANCELED", "CANCELLED"]:
+        return False, "This booking is already canceled."
+
+    if status == "REJECTED":
+        return False, "Rejected bookings cannot be canceled."
+
+    cancel_deadline = booking.get("cancel_deadline")
+
+    if cancel_deadline is None:
+        return False, "This booking has no cancellation deadline."
+
+    if datetime.now() > cancel_deadline:
+        return False, "Cancellation deadline has passed."
+
+    return True, "This booking can be canceled."
+
+
+def cancel_customer_booking(
+    booking_id: int,
+    customer_id: int,
+) -> dict:
+    BookingModel = get_booking_model()
+
+    with get_session() as session:
+        booking = session.get(BookingModel, booking_id)
+
+        if booking is None:
+            raise ValueError("Booking not found.")
+
+        booking_customer_id = get_first_attr(
+            booking,
+            ["customer_id", "user_id"],
+            None,
+        )
+
+        if booking_customer_id != customer_id:
+            raise PermissionError("You cannot cancel another customer's booking.")
+
+        booking_dict = booking_to_dict(booking)
+
+        booking_dict["cancel_deadline"] = get_first_attr(
+            booking,
+            ["cancel_deadline"],
+            None,
+        )
+
+        can_cancel, reason = can_customer_cancel_booking(booking_dict)
+
+        if not can_cancel:
+            raise ValueError(reason)
+
+        columns = get_model_columns(BookingModel)
+
+        if "status" in columns:
+            booking.status = choose_enum_value(
+                BookingModel,
+                "status",
+                candidates=["CANCELED", "CANCELLED", "Canceled", "Cancelled"],
+                fallback="CANCELED",
+            )
+
+        elif "booking_status" in columns:
+            booking.booking_status = choose_enum_value(
+                BookingModel,
+                "booking_status",
+                candidates=["CANCELED", "CANCELLED", "Canceled", "Cancelled"],
+                fallback="CANCELED",
+            )
+
+        if "canceled_at" in columns:
+            booking.canceled_at = datetime.now()
+
+        if "updated_at" in columns:
+            booking.updated_at = datetime.now()
+
+        session.commit()
+        session.refresh(booking)
+
+        return booking_to_dict(booking)

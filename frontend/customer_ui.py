@@ -12,7 +12,12 @@ from frontend.service_helpers import (
 )
 from frontend.session import clear_selected_service, select_service
 from frontend.schedule_helpers import fetch_available_schedules_for_service
-from frontend.booking_helpers import create_customer_booking
+from frontend.booking_helpers import (
+    can_customer_cancel_booking,
+    cancel_customer_booking,
+    create_customer_booking,
+    fetch_customer_bookings,
+)
 
 
 def render_customer_page(selected_page: str):
@@ -278,6 +283,7 @@ def render_service_detail(service: dict):
 
     render_available_slots_for_service(service)
 
+
 def render_available_slots_for_service(service: dict):
     st.subheader("Available Time Slots")
 
@@ -344,6 +350,7 @@ def render_available_slots_for_service(service: dict):
             st.error("Could not create booking.")
             st.exception(error)
 
+
 def render_available_slots_table(slots: list[dict]):
     table_data = []
 
@@ -368,6 +375,7 @@ def render_available_slots_table(slots: list[dict]):
         use_container_width=True,
         hide_index=True,
     )
+
 
 def render_booking_summary(service: dict, slot: dict):
     start_datetime = slot.get("start_datetime")
@@ -394,6 +402,7 @@ def render_booking_summary(service: dict, slot: dict):
                 f"{end_datetime.strftime('%H:%M') if end_datetime else '-'}"
             )
             st.write(f"**Slot ID:** {slot.get('id')}")
+
 
 def render_available_slots_selector(slots: list[dict]) -> int | None:
     slot_options = {}
@@ -423,17 +432,146 @@ def render_available_slots_selector(slots: list[dict]) -> int | None:
     return slot_options[selected_label]
 
 
-
 def render_customer_bookings():
     page_title(
         "My Bookings",
-        "Customer can view and cancel their own bookings.",
+        "View and manage your service bookings.",
     )
 
-    placeholder_page(
-        "Customer bookings",
-        "Later, this page will connect to BookingService.",
+    success_message = st.session_state.pop("customer_booking_message", None)
+
+    if success_message:
+        st.success(success_message)
+
+    customer_id = st.session_state.user_id
+
+    try:
+        bookings = fetch_customer_bookings(customer_id)
+
+    except Exception as error:
+        st.error("Could not load your bookings.")
+        st.exception(error)
+        return
+
+    if not bookings:
+        st.info("You have not created any bookings yet.")
+        return
+
+    render_customer_bookings_table(bookings)
+    render_customer_booking_cards(bookings)
+
+
+def render_customer_bookings_table(bookings: list[dict]):
+    st.subheader("Bookings Table")
+
+    table_data = []
+
+    for booking in bookings:
+        slot_start = booking.get("slot_start")
+        slot_end = booking.get("slot_end")
+        cancel_deadline = booking.get("cancel_deadline")
+
+        table_data.append(
+            {
+                "Booking ID": booking.get("id"),
+                "Service": booking.get("service_title"),
+                "Provider": booking.get("provider_name"),
+                "Date": slot_start.date() if slot_start else "-",
+                "Time": (
+                    f"{slot_start.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}"
+                    if slot_start and slot_end
+                    else "-"
+                ),
+                "Status": booking.get("status") or "-",
+                "Payment": booking.get("payment_status") or "-",
+                "Cancel Deadline": (
+                    cancel_deadline.strftime("%Y-%m-%d %H:%M")
+                    if cancel_deadline
+                    else "-"
+                ),
+            }
+        )
+
+    df = pd.DataFrame(table_data)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
     )
+
+
+def render_customer_booking_cards(bookings: list[dict]):
+    st.subheader("Booking Details")
+
+    for booking in bookings:
+        booking_id = booking.get("id")
+        slot_start = booking.get("slot_start")
+        slot_end = booking.get("slot_end")
+        cancel_deadline = booking.get("cancel_deadline")
+
+        with st.container(border=True):
+            st.markdown(f"### Booking #{booking_id}")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.write(f"**Service:** {booking.get('service_title')}")
+                st.write(f"**Provider:** {booking.get('provider_name')}")
+                st.write(f"**Price:** {booking.get('service_price') or '-'}")
+
+            with col2:
+                st.write(
+                    f"**Date:** {slot_start.date() if slot_start else '-'}"
+                )
+                st.write(
+                    f"**Time:** "
+                    f"{slot_start.strftime('%H:%M') if slot_start else '-'}"
+                    f" - "
+                    f"{slot_end.strftime('%H:%M') if slot_end else '-'}"
+                )
+                st.write(
+                    f"**Cancel Deadline:** "
+                    f"{cancel_deadline.strftime('%Y-%m-%d %H:%M') if cancel_deadline else '-'}"
+                )
+
+            with col3:
+                st.write(f"**Status:** {booking.get('status') or '-'}")
+                st.write(f"**Payment:** {booking.get('payment_status') or '-'}")
+                st.write(f"**Slot ID:** {booking.get('schedule_id') or '-'}")
+
+            can_cancel, reason = can_customer_cancel_booking(booking)
+
+            if can_cancel:
+                confirm_cancel = st.checkbox(
+                    "Confirm cancellation",
+                    key=f"confirm_cancel_booking_{booking_id}",
+                )
+
+                if st.button(
+                    "Cancel Booking",
+                    key=f"cancel_booking_{booking_id}",
+                    use_container_width=True,
+                    disabled=not confirm_cancel,
+                ):
+                    try:
+                        cancel_customer_booking(
+                            booking_id=booking_id,
+                            customer_id=st.session_state.user_id,
+                        )
+
+                        st.session_state.customer_booking_message = (
+                            f"Booking #{booking_id} canceled successfully."
+                        )
+
+                        st.rerun()
+
+                    except Exception as error:
+                        st.error("Could not cancel booking.")
+                        st.exception(error)
+
+            else:
+                st.info(reason)
 
 
 def render_customer_profile():
