@@ -107,3 +107,11 @@ def filter_services(
         filtered.append(service)
 
     return filtered
+
+
+def find_service_by_id(services: list[dict], service_id: int) -> dict | None:
+    for service in services:
+        if service.get("id") == service_id:
+            return service
+
+    return None

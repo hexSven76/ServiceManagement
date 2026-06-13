@@ -1,9 +1,16 @@
-import streamlit as st
+from pathlib import Path
+
 import pandas as pd
+import streamlit as st
 
 from app.exceptions import AppError
 from frontend.components import page_title, placeholder_page
-from frontend.service_helpers import fetch_all_services, filter_services
+from frontend.service_helpers import (
+    fetch_all_services,
+    filter_services,
+    find_service_by_id,
+)
+from frontend.session import clear_selected_service, select_service
 
 
 def render_customer_page(selected_page: str):
@@ -27,11 +34,6 @@ def render_customer_page(selected_page: str):
 
 
 def render_browse_services():
-    page_title(
-        "Browse Services",
-        "Search and filter available services.",
-    )
-
     try:
         services = fetch_all_services()
 
@@ -43,6 +45,27 @@ def render_browse_services():
         st.error("Unexpected error while loading services.")
         st.exception(error)
         return
+
+    if st.session_state.selected_service_id is not None:
+        selected_service = find_service_by_id(
+            services=services,
+            service_id=st.session_state.selected_service_id,
+        )
+
+        if selected_service is None:
+            st.error("Selected service was not found.")
+            if st.button("Back to Browse"):
+                clear_selected_service()
+                st.rerun()
+            return
+
+        render_service_detail(selected_service)
+        return
+
+    page_title(
+        "Browse Services",
+        "Search and filter available services.",
+    )
 
     if not services:
         st.info("No services have been created yet.")
@@ -191,12 +214,75 @@ def render_service_cards(services: list[dict]):
                 else:
                     st.warning("Inactive")
 
-            st.button(
+            if st.button(
                 "View Details",
                 key=f"view_service_{service.get('id')}",
-                disabled=True,
-                help="This button will be activated in the next card.",
-            )
+                use_container_width=True,
+            ):
+                select_service(service.get("id"))
+                st.rerun()
+
+
+def render_service_detail(service: dict):
+    if st.button("← Back to Browse"):
+        clear_selected_service()
+        st.rerun()
+
+    st.markdown("---")
+
+    page_title(
+        service.get("title", "Service Details"),
+        "Full service information.",
+    )
+
+    image_path = service.get("image_path")
+    safe_image_path = Path(image_path) if image_path else None
+
+    if safe_image_path and safe_image_path.exists():
+        st.image(str(safe_image_path), use_container_width=True)
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Price", service.get("price"))
+
+    with col2:
+        st.metric("Duration", service.get("duration"))
+
+    with col3:
+        if service.get("is_active"):
+            st.success("Active")
+        else:
+            st.warning("Inactive")
+
+    st.markdown("### Description")
+    st.write(service.get("description") or "No description provided.")
+
+    st.markdown("### Service Information")
+
+    info_col1, info_col2 = st.columns(2)
+
+    with info_col1:
+        st.write(f"**Service ID:** {service.get('id')}")
+        st.write(f"**Category:** {service.get('category')}")
+        st.write(f"**Provider:** {service.get('provider_name')}")
+
+    with info_col2:
+        st.write(f"**Provider ID:** {service.get('provider_id')}")
+        st.write(f"**Status:** {'Active' if service.get('is_active') else 'Inactive'}")
+        st.write(f"**Image:** {service.get('image_path') or 'No image'}")
+
+    st.markdown("---")
+
+    st.subheader("Available Time Slots")
+    st.info("Available slots will be connected in the next booking-related card.")
+
+    st.button(
+        "Book This Service",
+        disabled=True,
+        use_container_width=True,
+        help="Booking will be implemented in the next card.",
+    )
 
 
 def render_customer_bookings():

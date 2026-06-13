@@ -14,6 +14,9 @@ def init_session():
     if "is_logged_in" not in st.session_state:
         st.session_state.is_logged_in = False
 
+    if "selected_service_id" not in st.session_state:
+        st.session_state.selected_service_id = None
+
 
 def login_user(user_id: int, role: str, username: str):
     st.session_state.user_id = user_id
@@ -27,3 +30,12 @@ def logout_user():
     st.session_state.role = None
     st.session_state.username = None
     st.session_state.is_logged_in = False
+    st.session_state.selected_service_id = None
+
+
+def select_service(service_id: int):
+    st.session_state.selected_service_id = service_id
+
+
+def clear_selected_service():
+    st.session_state.selected_service_id = None
