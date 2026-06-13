@@ -322,7 +322,41 @@ def build_booking_data(
     return data
 
 
+def is_booking_blocking_slot(booking) -> bool:
+    booking_dict = booking_to_dict(booking)
+    status = str(booking_dict.get("status") or "").upper()
+
+    return status not in ["CANCELED", "CANCELLED", "REJECTED"]
+
+
 def find_existing_booking_for_slot(session, slot_id: int):
+    BookingModel = get_booking_model()
+    columns = get_model_columns(BookingModel)
+
+    slot_column_name = get_first_existing_column(
+        columns,
+        ["schedule_id", "slot_id", "time_slot_id", "schedule_slot_id"],
+    )
+
+    if slot_column_name is None:
+        return None
+
+    slot_column = getattr(BookingModel, slot_column_name)
+
+    bookings = (
+        session.query(BookingModel)
+        .filter(slot_column == slot_id)
+        .all()
+    )
+
+    for booking in bookings:
+        if is_booking_blocking_slot(booking):
+            return booking
+
+    return None
+
+
+def find_any_booking_for_slot(session, slot_id: int):
     BookingModel = get_booking_model()
     columns = get_model_columns(BookingModel)
 
@@ -341,6 +375,21 @@ def find_existing_booking_for_slot(session, slot_id: int):
         .filter(slot_column == slot_id)
         .first()
     )
+
+
+def apply_booking_data_to_existing_booking(booking, booking_data: dict):
+    for field, value in booking_data.items():
+        if hasattr(booking, field):
+            setattr(booking, field, value)
+
+    if hasattr(booking, "confirmed_at"):
+        booking.confirmed_at = None
+
+    if hasattr(booking, "rejected_at"):
+        booking.rejected_at = None
+
+    if hasattr(booking, "canceled_at"):
+        booking.canceled_at = None
 
 
 def mark_schedule_as_booked(schedule):
@@ -408,13 +457,10 @@ def create_customer_booking(
 
         validate_slot_is_available(slot)
 
-        existing_booking = find_existing_booking_for_slot(
+        existing_booking = find_any_booking_for_slot(
             session=session,
             slot_id=slot_id,
         )
-
-        if existing_booking is not None:
-            raise ValueError("This time slot already has a booking.")
 
         provider_id = service.get("provider_id")
 
@@ -428,6 +474,22 @@ def create_customer_booking(
             slot=slot,
             service=service,
         )
+
+        if existing_booking is not None:
+            if is_booking_blocking_slot(existing_booking):
+                raise ValueError("This time slot already has an active booking.")
+
+            apply_booking_data_to_existing_booking(
+                booking=existing_booking,
+                booking_data=booking_data,
+            )
+
+            mark_schedule_as_booked(schedule)
+
+            session.commit()
+            session.refresh(existing_booking)
+
+            return booking_to_dict(existing_booking)
 
         booking = BookingModel(**booking_data)
 
@@ -627,7 +689,272 @@ def cancel_customer_booking(
         if "updated_at" in columns:
             booking.updated_at = datetime.now()
 
+        schedule = get_booking_schedule(booking)
+
+        if schedule is not None:
+            mark_schedule_as_available(schedule)
+
         session.commit()
         session.refresh(booking)
 
         return booking_to_dict(booking)
+
+
+def get_booking_schedule(booking):
+    return (
+        getattr(booking, "schedule", None)
+        or getattr(booking, "slot", None)
+        or getattr(booking, "time_slot", None)
+    )
+
+
+def mark_schedule_as_available(schedule):
+    """
+    Release a slot after cancellation or rejection.
+    """
+    ScheduleModel = type(schedule)
+
+    if hasattr(schedule, "is_booked"):
+        schedule.is_booked = False
+
+    elif hasattr(schedule, "booked"):
+        schedule.booked = False
+
+    if hasattr(schedule, "status"):
+        schedule.status = choose_enum_value(
+            ScheduleModel,
+            "status",
+            candidates=["ACTIVE", "Active", "active"],
+            fallback="ACTIVE",
+        )
+
+    elif hasattr(schedule, "is_active"):
+        schedule.is_active = True
+
+    elif hasattr(schedule, "active"):
+        schedule.active = True
+
+
+def fetch_provider_bookings(provider_id: int) -> list[dict]:
+    BookingModel = get_booking_model()
+
+    with get_session() as session:
+        columns = get_model_columns(BookingModel)
+
+        if "provider_id" not in columns:
+            raise ValueError("Booking model has no provider_id column.")
+
+        query = (
+            session.query(BookingModel)
+            .filter(BookingModel.provider_id == provider_id)
+        )
+
+        if hasattr(BookingModel, "id"):
+            query = query.order_by(BookingModel.id.desc())
+
+        bookings = query.all()
+
+        result = []
+
+        for booking in bookings:
+            booking_dict = booking_to_dict(booking)
+
+            service = getattr(booking, "service", None)
+            customer = (
+                getattr(booking, "customer", None)
+                or getattr(booking, "user", None)
+            )
+            schedule = get_booking_schedule(booking)
+
+            if service is not None:
+                booking_dict["service_title"] = get_first_attr(
+                    service,
+                    ["title", "name", "service_name"],
+                    f"Service #{booking_dict.get('service_id')}",
+                )
+                booking_dict["service_price"] = get_first_attr(
+                    service,
+                    ["price"],
+                    None,
+                )
+            else:
+                booking_dict["service_title"] = f"Service #{booking_dict.get('service_id')}"
+                booking_dict["service_price"] = None
+
+            if customer is not None:
+                booking_dict["customer_name"] = get_first_attr(
+                    customer,
+                    ["username", "full_name", "email"],
+                    f"Customer #{booking_dict.get('customer_id')}",
+                )
+                booking_dict["customer_email"] = get_first_attr(
+                    customer,
+                    ["email"],
+                    "-",
+                )
+            else:
+                booking_dict["customer_name"] = f"Customer #{booking_dict.get('customer_id')}"
+                booking_dict["customer_email"] = "-"
+
+            if schedule is not None:
+                slot = schedule_to_dict(schedule)
+                booking_dict["slot_start"] = slot.get("start_datetime")
+                booking_dict["slot_end"] = slot.get("end_datetime")
+                booking_dict["slot_status"] = slot.get("status")
+                booking_dict["slot_is_active"] = slot.get("is_active")
+                booking_dict["slot_is_booked"] = slot.get("is_booked")
+            else:
+                booking_dict["slot_start"] = get_first_attr(
+                    booking,
+                    ["start_time", "start_datetime", "starts_at", "start"],
+                    None,
+                )
+                booking_dict["slot_end"] = get_first_attr(
+                    booking,
+                    ["end_time", "end_datetime", "ends_at", "end"],
+                    None,
+                )
+
+            booking_dict["cancel_deadline"] = get_first_attr(
+                booking,
+                ["cancel_deadline"],
+                None,
+            )
+            booking_dict["confirmed_at"] = get_first_attr(
+                booking,
+                ["confirmed_at"],
+                None,
+            )
+            booking_dict["rejected_at"] = get_first_attr(
+                booking,
+                ["rejected_at"],
+                None,
+            )
+            booking_dict["canceled_at"] = get_first_attr(
+                booking,
+                ["canceled_at"],
+                None,
+            )
+
+            result.append(booking_dict)
+
+        return result
+
+
+def update_provider_booking_status(
+    booking_id: int,
+    provider_id: int,
+    target_status_candidates: list[str],
+    fallback_status: str,
+    timestamp_field: str | None = None,
+    release_slot: bool = False,
+) -> dict:
+    BookingModel = get_booking_model()
+
+    with get_session() as session:
+        booking = session.get(BookingModel, booking_id)
+
+        if booking is None:
+            raise ValueError("Booking not found.")
+
+        booking_provider_id = get_first_attr(
+            booking,
+            ["provider_id"],
+            None,
+        )
+
+        if booking_provider_id != provider_id:
+            raise PermissionError("You cannot manage another provider's booking.")
+
+        columns = get_model_columns(BookingModel)
+
+        if "status" in columns:
+            booking.status = choose_enum_value(
+                BookingModel,
+                "status",
+                candidates=target_status_candidates,
+                fallback=fallback_status,
+            )
+
+        elif "booking_status" in columns:
+            booking.booking_status = choose_enum_value(
+                BookingModel,
+                "booking_status",
+                candidates=target_status_candidates,
+                fallback=fallback_status,
+            )
+
+        now = datetime.now()
+
+        if timestamp_field and timestamp_field in columns:
+            setattr(booking, timestamp_field, now)
+
+        if "updated_at" in columns:
+            booking.updated_at = now
+
+        schedule = get_booking_schedule(booking)
+
+        if release_slot and schedule is not None:
+            mark_schedule_as_available(schedule)
+
+        session.commit()
+        session.refresh(booking)
+
+        return booking_to_dict(booking)
+
+
+def approve_provider_booking(
+    booking_id: int,
+    provider_id: int,
+) -> dict:
+    return update_provider_booking_status(
+        booking_id=booking_id,
+        provider_id=provider_id,
+        target_status_candidates=[
+            "CONFIRMED",
+            "APPROVED",
+            "Confirmed",
+            "Approved",
+        ],
+        fallback_status="CONFIRMED",
+        timestamp_field="confirmed_at",
+        release_slot=False,
+    )
+
+
+def reject_provider_booking(
+    booking_id: int,
+    provider_id: int,
+) -> dict:
+    return update_provider_booking_status(
+        booking_id=booking_id,
+        provider_id=provider_id,
+        target_status_candidates=[
+            "REJECTED",
+            "Rejected",
+        ],
+        fallback_status="REJECTED",
+        timestamp_field="rejected_at",
+        release_slot=True,
+    )
+
+
+def cancel_provider_booking(
+    booking_id: int,
+    provider_id: int,
+) -> dict:
+    return update_provider_booking_status(
+        booking_id=booking_id,
+        provider_id=provider_id,
+        target_status_candidates=[
+            "CANCELED",
+            "CANCELLED",
+            "Canceled",
+            "Cancelled",
+        ],
+        fallback_status="CANCELED",
+        timestamp_field="canceled_at",
+        release_slot=True,
+    )
+
+

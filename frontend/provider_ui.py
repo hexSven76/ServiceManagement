@@ -16,6 +16,13 @@ from frontend.schedule_helpers import (
     fetch_schedules_for_provider_services,
     set_schedule_active_status,
 )
+from frontend.booking_helpers import (
+    approve_provider_booking,
+    cancel_provider_booking,
+    fetch_provider_bookings,
+    reject_provider_booking,
+)
+
 
 def render_provider_page(selected_page: str):
     if selected_page == "Dashboard":
@@ -623,13 +630,210 @@ def render_schedule_cards(
 def render_provider_bookings():
     page_title(
         "Provider Bookings",
-        "Provider can view, approve, reject, or cancel received bookings.",
+        "View and manage bookings received for your services.",
     )
 
-    placeholder_page(
-        "Received bookings",
-        "Later, this page will connect to BookingService.",
+    success_message = st.session_state.pop("provider_booking_message", None)
+
+    if success_message:
+        st.success(success_message)
+
+    provider_id = st.session_state.user_id
+
+    try:
+        bookings = fetch_provider_bookings(provider_id)
+
+    except Exception as error:
+        st.error("Could not load provider bookings.")
+        st.exception(error)
+        return
+
+    if not bookings:
+        st.info("You have not received any bookings yet.")
+        return
+
+    render_provider_bookings_table(bookings)
+    render_provider_booking_cards(bookings)
+
+
+def get_booking_status_upper(booking: dict) -> str:
+    return str(booking.get("status") or "").upper()
+
+
+def can_provider_approve_booking(booking: dict) -> bool:
+    return get_booking_status_upper(booking) == "PENDING"
+
+
+def can_provider_reject_booking(booking: dict) -> bool:
+    return get_booking_status_upper(booking) == "PENDING"
+
+
+def can_provider_cancel_booking(booking: dict) -> bool:
+    return get_booking_status_upper(booking) in [
+        "PENDING",
+        "CONFIRMED",
+        "APPROVED",
+    ]
+
+
+def render_provider_bookings_table(bookings: list[dict]):
+    st.subheader("Received Bookings Table")
+
+    table_data = []
+
+    for booking in bookings:
+        slot_start = booking.get("slot_start")
+        slot_end = booking.get("slot_end")
+
+        table_data.append(
+            {
+                "Booking ID": booking.get("id"),
+                "Customer": booking.get("customer_name"),
+                "Service": booking.get("service_title"),
+                "Date": slot_start.date() if slot_start else "-",
+                "Time": (
+                    f"{slot_start.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}"
+                    if slot_start and slot_end
+                    else "-"
+                ),
+                "Status": booking.get("status") or "-",
+                "Payment": booking.get("payment_status") or "-",
+                "Slot ID": booking.get("schedule_id") or "-",
+            }
+        )
+
+    df = pd.DataFrame(table_data)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
     )
+
+
+def render_provider_booking_cards(bookings: list[dict]):
+    st.subheader("Manage Received Bookings")
+
+    for booking in bookings:
+        booking_id = booking.get("id")
+        slot_start = booking.get("slot_start")
+        slot_end = booking.get("slot_end")
+
+        with st.container(border=True):
+            st.markdown(f"### Booking #{booking_id}")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.write(f"**Customer:** {booking.get('customer_name')}")
+                st.write(f"**Customer Email:** {booking.get('customer_email')}")
+                st.write(f"**Service:** {booking.get('service_title')}")
+
+            with col2:
+                st.write(
+                    f"**Date:** {slot_start.date() if slot_start else '-'}"
+                )
+                st.write(
+                    f"**Time:** "
+                    f"{slot_start.strftime('%H:%M') if slot_start else '-'}"
+                    f" - "
+                    f"{slot_end.strftime('%H:%M') if slot_end else '-'}"
+                )
+                st.write(f"**Price:** {booking.get('service_price') or '-'}")
+
+            with col3:
+                st.write(f"**Status:** {booking.get('status') or '-'}")
+                st.write(f"**Payment:** {booking.get('payment_status') or '-'}")
+                st.write(f"**Slot ID:** {booking.get('schedule_id') or '-'}")
+
+            action_col1, action_col2, action_col3 = st.columns(3)
+
+            with action_col1:
+                if st.button(
+                    "Approve",
+                    key=f"approve_booking_{booking_id}",
+                    use_container_width=True,
+                    disabled=not can_provider_approve_booking(booking),
+                ):
+                    try:
+                        approve_provider_booking(
+                            booking_id=booking_id,
+                            provider_id=st.session_state.user_id,
+                        )
+
+                        st.session_state.provider_booking_message = (
+                            f"Booking #{booking_id} approved successfully."
+                        )
+
+                        st.rerun()
+
+                    except Exception as error:
+                        st.error("Could not approve booking.")
+                        st.exception(error)
+
+            with action_col2:
+                confirm_reject = st.checkbox(
+                    "Confirm reject",
+                    key=f"confirm_reject_booking_{booking_id}",
+                    disabled=not can_provider_reject_booking(booking),
+                )
+
+                if st.button(
+                    "Reject",
+                    key=f"reject_booking_{booking_id}",
+                    use_container_width=True,
+                    disabled=(
+                        not can_provider_reject_booking(booking)
+                        or not confirm_reject
+                    ),
+                ):
+                    try:
+                        reject_provider_booking(
+                            booking_id=booking_id,
+                            provider_id=st.session_state.user_id,
+                        )
+
+                        st.session_state.provider_booking_message = (
+                            f"Booking #{booking_id} rejected successfully."
+                        )
+
+                        st.rerun()
+
+                    except Exception as error:
+                        st.error("Could not reject booking.")
+                        st.exception(error)
+
+            with action_col3:
+                confirm_cancel = st.checkbox(
+                    "Confirm cancel",
+                    key=f"confirm_cancel_provider_booking_{booking_id}",
+                    disabled=not can_provider_cancel_booking(booking),
+                )
+
+                if st.button(
+                    "Cancel",
+                    key=f"cancel_provider_booking_{booking_id}",
+                    use_container_width=True,
+                    disabled=(
+                        not can_provider_cancel_booking(booking)
+                        or not confirm_cancel
+                    ),
+                ):
+                    try:
+                        cancel_provider_booking(
+                            booking_id=booking_id,
+                            provider_id=st.session_state.user_id,
+                        )
+
+                        st.session_state.provider_booking_message = (
+                            f"Booking #{booking_id} canceled successfully."
+                        )
+
+                        st.rerun()
+
+                    except Exception as error:
+                        st.error("Could not cancel booking.")
+                        st.exception(error)
 
 
 def render_provider_reviews():
