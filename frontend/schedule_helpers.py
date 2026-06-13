@@ -366,3 +366,34 @@ def delete_schedule_slot(schedule_id: int, provider_service_ids: list[int]):
 
         session.delete(schedule)
         session.commit()
+
+
+
+def fetch_available_schedules_for_service(service_id: int) -> list[dict]:
+    """
+    Fetch only active and unbooked slots for one service.
+    Used by the customer service detail page.
+    """
+    schedules = fetch_schedules_for_service(service_id)
+
+    available_slots = []
+
+    for slot in schedules:
+        if not slot.get("is_active", False):
+            continue
+
+        if slot.get("is_booked", False):
+            continue
+
+        status = slot.get("status")
+
+        if status is not None and status != "ACTIVE":
+            continue
+
+        available_slots.append(slot)
+
+    available_slots.sort(
+        key=lambda slot: slot.get("start_datetime")
+    )
+
+    return available_slots

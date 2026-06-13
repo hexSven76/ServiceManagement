@@ -11,6 +11,7 @@ from frontend.service_helpers import (
     find_service_by_id,
 )
 from frontend.session import clear_selected_service, select_service
+from frontend.schedule_helpers import fetch_available_schedules_for_service
 
 
 def render_customer_page(selected_page: str):
@@ -274,15 +275,98 @@ def render_service_detail(service: dict):
 
     st.markdown("---")
 
+    render_available_slots_for_service(service)
+
+def render_available_slots_for_service(service: dict):
     st.subheader("Available Time Slots")
-    st.info("Available slots will be connected in the next booking-related card.")
+
+    service_id = service.get("id")
+
+    try:
+        available_slots = fetch_available_schedules_for_service(service_id)
+
+    except Exception as error:
+        st.error("Could not load available time slots.")
+        st.exception(error)
+        return
+
+    if not available_slots:
+        st.info("No available time slots for this service yet.")
+        st.button(
+            "Book This Service",
+            disabled=True,
+            use_container_width=True,
+            help="A provider must create active schedule slots first.",
+        )
+        return
+
+    render_available_slots_table(available_slots)
+    selected_slot_id = render_available_slots_selector(available_slots)
 
     st.button(
-        "Book This Service",
+        "Book Selected Slot",
         disabled=True,
         use_container_width=True,
-        help="Booking will be implemented in the next card.",
+        help=(
+            f"Selected slot ID: {selected_slot_id}. "
+            "Booking will be implemented in the next card."
+        ),
     )
+
+
+def render_available_slots_table(slots: list[dict]):
+    table_data = []
+
+    for slot in slots:
+        start_datetime = slot.get("start_datetime")
+        end_datetime = slot.get("end_datetime")
+
+        table_data.append(
+            {
+                "Slot ID": slot.get("id"),
+                "Date": start_datetime.date() if start_datetime else "-",
+                "Start": start_datetime.strftime("%H:%M") if start_datetime else "-",
+                "End": end_datetime.strftime("%H:%M") if end_datetime else "-",
+                "Status": slot.get("status") or "-",
+            }
+        )
+
+    df = pd.DataFrame(table_data)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_available_slots_selector(slots: list[dict]) -> int | None:
+    slot_options = {}
+
+    for slot in slots:
+        slot_id = slot.get("id")
+        start_datetime = slot.get("start_datetime")
+        end_datetime = slot.get("end_datetime")
+
+        if start_datetime and end_datetime:
+            label = (
+                f"Slot #{slot_id} | "
+                f"{start_datetime.date()} | "
+                f"{start_datetime.strftime('%H:%M')} - "
+                f"{end_datetime.strftime('%H:%M')}"
+            )
+        else:
+            label = f"Slot #{slot_id}"
+
+        slot_options[label] = slot_id
+
+    selected_label = st.radio(
+        "Select a time slot",
+        list(slot_options.keys()),
+    )
+
+    return slot_options[selected_label]
+
 
 
 def render_customer_bookings():
