@@ -12,6 +12,7 @@ from frontend.service_helpers import (
 )
 from frontend.session import clear_selected_service, select_service
 from frontend.schedule_helpers import fetch_available_schedules_for_service
+from frontend.booking_helpers import create_customer_booking
 
 
 def render_customer_page(selected_page: str):
@@ -280,6 +281,11 @@ def render_service_detail(service: dict):
 def render_available_slots_for_service(service: dict):
     st.subheader("Available Time Slots")
 
+    success_message = st.session_state.pop("booking_success_message", None)
+
+    if success_message:
+        st.success(success_message)
+
     service_id = service.get("id")
 
     try:
@@ -292,27 +298,51 @@ def render_available_slots_for_service(service: dict):
 
     if not available_slots:
         st.info("No available time slots for this service yet.")
-        st.button(
-            "Book This Service",
-            disabled=True,
-            use_container_width=True,
-            help="A provider must create active schedule slots first.",
-        )
         return
 
     render_available_slots_table(available_slots)
     selected_slot_id = render_available_slots_selector(available_slots)
 
-    st.button(
-        "Book Selected Slot",
-        disabled=True,
-        use_container_width=True,
-        help=(
-            f"Selected slot ID: {selected_slot_id}. "
-            "Booking will be implemented in the next card."
+    selected_slot = next(
+        (
+            slot
+            for slot in available_slots
+            if slot.get("id") == selected_slot_id
         ),
+        None,
     )
 
+    if selected_slot is None:
+        st.warning("Please select a valid time slot.")
+        return
+
+    render_booking_summary(
+        service=service,
+        slot=selected_slot,
+    )
+
+    if st.button(
+        "Book Selected Slot",
+        use_container_width=True,
+        type="primary",
+    ):
+        try:
+            booking = create_customer_booking(
+                customer_id=st.session_state.user_id,
+                service=service,
+                slot_id=selected_slot_id,
+            )
+
+            st.session_state.booking_success_message = (
+                f"Booking #{booking.get('id')} created successfully. "
+                f"Status: {booking.get('status') or 'PENDING'}."
+            )
+
+            st.rerun()
+
+        except Exception as error:
+            st.error("Could not create booking.")
+            st.exception(error)
 
 def render_available_slots_table(slots: list[dict]):
     table_data = []
@@ -339,6 +369,31 @@ def render_available_slots_table(slots: list[dict]):
         hide_index=True,
     )
 
+def render_booking_summary(service: dict, slot: dict):
+    start_datetime = slot.get("start_datetime")
+    end_datetime = slot.get("end_datetime")
+
+    st.markdown("### Booking Summary")
+
+    with st.container(border=True):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.write(f"**Service:** {service.get('title')}")
+            st.write(f"**Provider:** {service.get('provider_name')}")
+            st.write(f"**Price:** {service.get('price')}")
+
+        with col2:
+            st.write(
+                f"**Date:** {start_datetime.date() if start_datetime else '-'}"
+            )
+            st.write(
+                f"**Time:** "
+                f"{start_datetime.strftime('%H:%M') if start_datetime else '-'}"
+                f" - "
+                f"{end_datetime.strftime('%H:%M') if end_datetime else '-'}"
+            )
+            st.write(f"**Slot ID:** {slot.get('id')}")
 
 def render_available_slots_selector(slots: list[dict]) -> int | None:
     slot_options = {}
