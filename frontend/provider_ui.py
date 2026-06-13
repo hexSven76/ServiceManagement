@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+from datetime import datetime, time
 
 from frontend.components import page_title, placeholder_page
 from frontend.provider_service_helpers import (
@@ -9,7 +10,12 @@ from frontend.provider_service_helpers import (
     set_provider_service_active_status,
     update_provider_service,
 )
-
+from frontend.schedule_helpers import (
+    create_schedule_slot,
+    delete_schedule_slot,
+    fetch_schedules_for_provider_services,
+    set_schedule_active_status,
+)
 
 def render_provider_page(selected_page: str):
     if selected_page == "Dashboard":
@@ -352,13 +358,266 @@ def edit_service_form(service: dict, provider_id: int):
 def render_provider_schedule():
     page_title(
         "Schedule Management",
-        "Provider can define available time slots for services.",
+        "Define available time slots for your services.",
     )
 
-    placeholder_page(
-        "Time slot management",
-        "Later, this page will connect to ScheduleService.",
+    provider_id = st.session_state.user_id
+
+    try:
+        services = fetch_provider_services(provider_id)
+
+    except Exception as error:
+        st.error("Could not load your services.")
+        st.exception(error)
+        return
+
+    if not services:
+        st.info("You need to create at least one service before defining schedule slots.")
+        return
+
+    service_options = {
+        f"{service.get('title')} | ID: {service.get('id')}": service
+        for service in services
+    }
+
+    selected_service_label = st.selectbox(
+        "Select Service",
+        list(service_options.keys()),
     )
+
+    selected_service = service_options[selected_service_label]
+    selected_service_id = selected_service.get("id")
+
+    create_schedule_form(
+        provider_id=provider_id,
+        selected_service_id=selected_service_id,
+    )
+
+    st.markdown("---")
+
+    provider_service_ids = [service.get("id") for service in services]
+
+    try:
+        schedules = fetch_schedules_for_provider_services(provider_service_ids)
+
+    except Exception as error:
+        st.error("Could not load schedule slots.")
+        st.exception(error)
+        return
+
+    selected_service_schedules = [
+        slot for slot in schedules
+        if slot.get("service_id") == selected_service_id
+    ]
+
+    if not selected_service_schedules:
+        st.info("No schedule slots have been created for this service yet.")
+        return
+
+    render_schedule_table(selected_service_schedules)
+    render_schedule_cards(
+        schedules=selected_service_schedules,
+        provider_service_ids=provider_service_ids,
+    )
+
+
+def create_schedule_form(provider_id: int, selected_service_id: int):
+    with st.expander("➕ Create New Time Slot", expanded=True):
+        with st.form("create_schedule_form"):
+            slot_date = st.date_input("Date")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                start_time_value = st.time_input(
+                    "Start Time",
+                    value=time(9, 0),
+                )
+
+            with col2:
+                end_time_value = st.time_input(
+                    "End Time",
+                    value=time(10, 0),
+                )
+
+            with col3:
+                is_active = st.checkbox("Active", value=True)
+
+            submitted = st.form_submit_button("Create Time Slot")
+
+        if submitted:
+            start_datetime = datetime.combine(slot_date, start_time_value)
+            end_datetime = datetime.combine(slot_date, end_time_value)
+
+            if start_datetime >= end_datetime:
+                st.warning("Start time must be before end time.")
+                return
+
+            try:
+                create_schedule_slot(
+                    service_id=selected_service_id,
+                    provider_id=provider_id,
+                    start_datetime=start_datetime,
+                    end_datetime=end_datetime,
+                    is_active=is_active,
+                )
+
+                st.success("Schedule slot created successfully.")
+                st.rerun()
+
+            except Exception as error:
+                st.error("Could not create schedule slot.")
+                st.exception(error)
+
+
+def render_schedule_table(schedules: list[dict]):
+    st.subheader("Schedule Slots Table")
+
+    table_data = []
+
+    for slot in schedules:
+        start_datetime = slot.get("start_datetime")
+        end_datetime = slot.get("end_datetime")
+
+        table_data.append(
+            {
+                "ID": slot.get("id"),
+                "Date": start_datetime.date() if start_datetime else "-",
+                "Start": start_datetime.strftime("%H:%M") if start_datetime else "-",
+                "End": end_datetime.strftime("%H:%M") if end_datetime else "-",
+                "Active": "Yes" if slot.get("is_active") else "No",
+                "Booked": "Yes" if slot.get("is_booked") else "No",
+                "Status": slot.get("status") or "-",
+            }
+        )
+
+    df = pd.DataFrame(table_data)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_schedule_cards(
+    schedules: list[dict],
+    provider_service_ids: list[int],
+):
+    st.subheader("Manage Schedule Slots")
+
+    for slot in schedules:
+        schedule_id = slot.get("id")
+        start_datetime = slot.get("start_datetime")
+        end_datetime = slot.get("end_datetime")
+
+        with st.container(border=True):
+            st.markdown(f"### Slot #{schedule_id}")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.write(
+                    f"**Date:** {start_datetime.date() if start_datetime else '-'}"
+                )
+
+            with col2:
+                st.write(
+                    f"**Start:** {start_datetime.strftime('%H:%M') if start_datetime else '-'}"
+                )
+
+            with col3:
+                st.write(
+                    f"**End:** {end_datetime.strftime('%H:%M') if end_datetime else '-'}"
+                )
+
+            status_col1, status_col2, status_col3 = st.columns(3)
+
+            with status_col1:
+                if slot.get("is_active"):
+                    st.success("Active")
+                else:
+                    st.warning("Inactive")
+
+            with status_col2:
+                if slot.get("is_booked"):
+                    st.error("Booked")
+                else:
+                    st.info("Available")
+
+            with status_col3:
+                st.caption(f"Status: {slot.get('status') or '-'}")
+
+            action_col1, action_col2 = st.columns(2)
+
+            with action_col1:
+                if slot.get("is_active"):
+                    if st.button(
+                        "Deactivate",
+                        key=f"deactivate_schedule_{schedule_id}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            set_schedule_active_status(
+                                schedule_id=schedule_id,
+                                provider_service_ids=provider_service_ids,
+                                is_active=False,
+                            )
+
+                            st.success("Schedule slot deactivated.")
+                            st.rerun()
+
+                        except Exception as error:
+                            st.error("Could not deactivate schedule slot.")
+                            st.exception(error)
+                else:
+                    if st.button(
+                        "Activate",
+                        key=f"activate_schedule_{schedule_id}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            set_schedule_active_status(
+                                schedule_id=schedule_id,
+                                provider_service_ids=provider_service_ids,
+                                is_active=True,
+                            )
+
+                            st.success("Schedule slot activated.")
+                            st.rerun()
+
+                        except Exception as error:
+                            st.error("Could not activate schedule slot.")
+                            st.exception(error)
+
+            with action_col2:
+                confirm_delete = st.checkbox(
+                    "Confirm delete",
+                    key=f"confirm_delete_schedule_{schedule_id}",
+                )
+
+                if st.button(
+                    "Delete",
+                    key=f"delete_schedule_{schedule_id}",
+                    use_container_width=True,
+                    disabled=not confirm_delete,
+                ):
+                    if slot.get("is_booked"):
+                        st.warning("Booked slots should not be deleted.")
+                        return
+
+                    try:
+                        delete_schedule_slot(
+                            schedule_id=schedule_id,
+                            provider_service_ids=provider_service_ids,
+                        )
+
+                        st.success("Schedule slot deleted.")
+                        st.rerun()
+
+                    except Exception as error:
+                        st.error("Could not delete schedule slot.")
+                        st.exception(error)
 
 
 def render_provider_bookings():
