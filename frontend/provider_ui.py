@@ -22,6 +22,7 @@ from frontend.booking_helpers import (
     fetch_provider_bookings,
     reject_provider_booking,
 )
+from frontend.service_helpers import service_is_active
 
 
 def render_provider_page(selected_page: str):
@@ -179,7 +180,7 @@ def render_provider_services_table(services: list[dict]):
                 "Category": service.get("category"),
                 "Price": service.get("price"),
                 "Duration": service.get("duration"),
-                "Active": "Yes" if service.get("is_active") else "No",
+                "Status": service.get("status") or "-",
             }
         )
 
@@ -211,7 +212,7 @@ def render_provider_service_cards(services: list[dict], provider_id: int):
                 st.metric("Duration", service.get("duration"))
 
             with col3:
-                if service.get("is_active"):
+                if service_is_active(service):
                     st.success("Active")
                 else:
                     st.warning("Inactive")
@@ -223,7 +224,7 @@ def render_provider_service_cards(services: list[dict], provider_id: int):
             action_col1, action_col2 = st.columns(2)
 
             with action_col1:
-                if service.get("is_active"):
+                if service_is_active(service):
                     if st.button(
                         "Deactivate",
                         key=f"deactivate_service_{service_id}",
@@ -331,7 +332,7 @@ def edit_service_form(service: dict, provider_id: int):
             with col3:
                 is_active = st.checkbox(
                     "Active",
-                    value=bool(service.get("is_active")),
+                    value=service_is_active(service),
                     key=f"edit_active_{service_id}",
                 )
 

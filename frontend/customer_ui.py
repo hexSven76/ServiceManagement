@@ -9,6 +9,7 @@ from frontend.service_helpers import (
     fetch_all_services,
     filter_services,
     find_service_by_id,
+    service_is_active,
 )
 from frontend.session import clear_selected_service, select_service
 from frontend.schedule_helpers import fetch_available_schedules_for_service
@@ -216,7 +217,7 @@ def render_service_cards(services: list[dict]):
                 st.metric("Price", service.get("price"))
                 st.metric("Duration", service.get("duration"))
 
-                if service.get("is_active"):
+                if service_is_active(service):
                     st.success("Active")
                 else:
                     st.warning("Inactive")
@@ -257,7 +258,7 @@ def render_service_detail(service: dict):
         st.metric("Duration", service.get("duration"))
 
     with col3:
-        if service.get("is_active"):
+        if service_is_active(service):
             st.success("Active")
         else:
             st.warning("Inactive")
@@ -276,7 +277,7 @@ def render_service_detail(service: dict):
 
     with info_col2:
         st.write(f"**Provider ID:** {service.get('provider_id')}")
-        st.write(f"**Status:** {'Active' if service.get('is_active') else 'Inactive'}")
+        st.write(f"**Status:** {service.get('status') or '-'}")
         st.write(f"**Image:** {service.get('image_path') or 'No image'}")
 
     st.markdown("---")

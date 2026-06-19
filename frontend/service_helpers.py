@@ -1,7 +1,7 @@
 from typing import Any
 
 from app.db import get_session
-from app.models import Service
+from app.models import Service, ServiceStatusEnum
 from app.services.service_service import ServiceService
 
 
@@ -14,38 +14,82 @@ def get_first_attr(obj: Any, names: list[str], default=None):
     return default
 
 
+def normalize_service_status(status_value) -> str:
+    """
+    Convert backend enum/string status into a stable frontend string.
+    Output is always 'ACTIVE' or 'INACTIVE' when possible.
+    """
+    if status_value is None:
+        return "ACTIVE"
+
+    if hasattr(status_value, "value"):
+        raw = str(status_value.value)
+    else:
+        raw = str(status_value)
+
+    raw = raw.split(".")[-1].strip().upper()
+
+    if raw in {"ACTIVE", "TRUE", "1"}:
+        return "ACTIVE"
+
+    if raw in {"INACTIVE", "FALSE", "0"}:
+        return "INACTIVE"
+
+    return raw
+
+
+def service_is_active(service: dict) -> bool:
+    return normalize_service_status(service.get("status")) == "ACTIVE"
+
+
 def service_to_dict(service) -> dict:
     provider = get_first_attr(service, ["provider"], None)
 
     provider_name = None
     if provider is not None:
-        provider_name = get_first_attr(provider, ["username", "full_name", "email"], None)
+        provider_name = get_first_attr(
+            provider,
+            ["username", "full_name", "email"],
+            None,
+        )
+
+    raw_status = get_first_attr(
+        service,
+        ["status"],
+        ServiceStatusEnum.ACTIVE,
+    )
+    status = normalize_service_status(raw_status)
 
     return {
         "id": get_first_attr(service, ["id"]),
-        "title": get_first_attr(service, ["title", "name", "service_name"], "Untitled Service"),
+        "title": get_first_attr(
+            service,
+            ["title", "name", "service_name"],
+            "Untitled Service",
+        ),
         "description": get_first_attr(service, ["description"], ""),
         "category": get_first_attr(service, ["category"], "Uncategorized"),
         "price": get_first_attr(service, ["price"], 0),
         "duration": get_first_attr(
             service,
-            ["duration", "duration_minutes", "duration_time"],
+            ["duration_minutes", "duration", "duration_time"],
             "-",
         ),
-        "is_active": get_first_attr(service, ["is_active", "active"], True),
+        "status": status,
+        # Compatibility field for old UI code.
+        # This is derived from the real backend status, not from a DB column.
+        "is_active": status == "ACTIVE",
         "image_path": get_first_attr(service, ["image_path", "image"], None),
         "provider_id": get_first_attr(service, ["provider_id"], None),
-        "provider_name": provider_name or f"Provider #{get_first_attr(service, ['provider_id'], '-')}",
+        "provider_name": provider_name
+        or f"Provider #{get_first_attr(service, ['provider_id'], '-')}",
     }
 
 
 def fetch_all_services() -> list[dict]:
     """
-    Fetch services from backend and convert them to plain dictionaries.
-
-    Important:
-    We convert ORM objects to dicts inside the DB session to avoid
-    SQLAlchemy detached object issues after Streamlit reruns.
+    Fetch services from backend and convert ORM objects to plain dictionaries
+    inside the DB session.
     """
     with get_session() as session:
         service_service = ServiceService(session)
@@ -53,7 +97,6 @@ def fetch_all_services() -> list[dict]:
         try:
             services = service_service.list_services()
         except TypeError:
-            # Fallback if the backend method signature is different.
             services = session.query(Service).all()
 
         return [service_to_dict(service) for service in services]
@@ -69,7 +112,6 @@ def filter_services(
     active_only: bool = True,
 ) -> list[dict]:
     search_text = search_text.strip().lower()
-
     filtered = []
 
     for service in services:
@@ -77,18 +119,15 @@ def filter_services(
         description = str(service.get("description", "")).lower()
         service_category = str(service.get("category", "")).lower()
         provider_name = str(service.get("provider_name", "")).lower()
-
         price = service.get("price") or 0
-        is_active = bool(service.get("is_active", True))
 
-        if active_only and not is_active:
+        if active_only and not service_is_active(service):
             continue
 
         if search_text:
             searchable_text = " ".join(
                 [title, description, service_category, provider_name]
             )
-
             if search_text not in searchable_text:
                 continue
 
@@ -113,5 +152,4 @@ def find_service_by_id(services: list[dict], service_id: int) -> dict | None:
     for service in services:
         if service.get("id") == service_id:
             return service
-
     return None

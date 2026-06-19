@@ -1,7 +1,7 @@
 from typing import Any
 
 from app.db import get_session
-from app.models import Service
+from app.models import Service, ServiceStatusEnum
 from frontend.service_helpers import service_to_dict
 
 
@@ -21,6 +21,10 @@ def set_first_existing_field(
             return
 
 
+def bool_to_service_status(is_active: bool) -> ServiceStatusEnum:
+    return ServiceStatusEnum.ACTIVE if is_active else ServiceStatusEnum.INACTIVE
+
+
 def build_service_data(
     provider_id: int,
     title: str,
@@ -34,61 +38,28 @@ def build_service_data(
     columns = get_model_columns(Service)
     data = {}
 
-    set_first_existing_field(
-        data,
-        columns,
-        ["provider_id"],
-        provider_id,
-    )
+    set_first_existing_field(data, columns, ["provider_id"], provider_id)
+    set_first_existing_field(data, columns, ["title", "name", "service_name"], title)
+    set_first_existing_field(data, columns, ["description"], description)
+    set_first_existing_field(data, columns, ["category"], category)
+    set_first_existing_field(data, columns, ["price"], price)
 
+    # Backend model uses duration_minutes.
     set_first_existing_field(
         data,
         columns,
-        ["title", "name", "service_name"],
-        title,
-    )
-
-    set_first_existing_field(
-        data,
-        columns,
-        ["description"],
-        description,
-    )
-
-    set_first_existing_field(
-        data,
-        columns,
-        ["category"],
-        category,
-    )
-
-    set_first_existing_field(
-        data,
-        columns,
-        ["price"],
-        price,
-    )
-
-    set_first_existing_field(
-        data,
-        columns,
-        ["duration", "duration_minutes", "duration_time"],
+        ["duration_minutes", "duration", "duration_time"],
         duration,
     )
 
-    set_first_existing_field(
-        data,
-        columns,
-        ["is_active", "active"],
-        is_active,
-    )
+    # Correct backend field.
+    if "status" in columns:
+        data["status"] = bool_to_service_status(is_active)
+    else:
+        # Legacy fallback only.
+        set_first_existing_field(data, columns, ["is_active", "active"], is_active)
 
-    set_first_existing_field(
-        data,
-        columns,
-        ["image_path", "image"],
-        image_path,
-    )
+    set_first_existing_field(data, columns, ["image_path", "image"], image_path)
 
     return data
 
@@ -100,7 +71,6 @@ def fetch_provider_services(provider_id: int) -> list[dict]:
             .filter(Service.provider_id == provider_id)
             .all()
         )
-
         return [service_to_dict(service) for service in services]
 
 
@@ -127,7 +97,6 @@ def create_provider_service(
         )
 
         service = Service(**service_data)
-
         session.add(service)
         session.commit()
         session.refresh(service)
@@ -188,12 +157,14 @@ def set_provider_service_active_status(
         if service.provider_id != provider_id:
             raise PermissionError("You cannot update another provider's service.")
 
-        if hasattr(service, "is_active"):
+        if hasattr(service, "status"):
+            service.status = bool_to_service_status(is_active)
+        elif hasattr(service, "is_active"):
             service.is_active = is_active
         elif hasattr(service, "active"):
             service.active = is_active
         else:
-            raise ValueError("This Service model has no active status field.")
+            raise ValueError("This Service model has no status field.")
 
         session.commit()
         session.refresh(service)
