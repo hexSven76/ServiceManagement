@@ -19,7 +19,13 @@ from frontend.booking_helpers import (
     create_customer_booking,
     fetch_customer_bookings,
 )
-
+from frontend.ui_helpers import (
+    format_datetime,
+    format_duration_minutes,
+    format_price_irr,
+    show_action_error,
+    status_to_table_text,
+)
 
 def render_customer_page(selected_page: str):
     if selected_page == "Browse Services":
@@ -50,8 +56,7 @@ def render_browse_services():
         return
 
     except Exception as error:
-        st.error("Unexpected error while loading services.")
-        st.exception(error)
+        show_action_error(error)
         return
 
     if st.session_state.selected_service_id is not None:
@@ -133,7 +138,7 @@ def render_service_filters_and_results(services: list[dict]):
                 min_available_price,
                 max_available_price,
             )
-            st.caption(f"Price: {min_available_price}")
+            st.caption(f"Price: {format_price_irr(min_available_price)}")
         else:
             selected_price_range = st.slider(
                 "Price range",
@@ -180,9 +185,9 @@ def render_services_table(services: list[dict]):
                 "Title": service.get("title"),
                 "Category": service.get("category"),
                 "Provider": service.get("provider_name"),
-                "Price": service.get("price"),
-                "Duration": service.get("duration"),
-                "Active": "Yes" if service.get("is_active") else "No",
+                "Price": format_price_irr(service.get("price")),
+                "Duration": format_duration_minutes(service.get("duration")),
+                "Status": status_to_table_text(service.get("status")),
             }
         )
 
@@ -214,8 +219,8 @@ def render_service_cards(services: list[dict]):
                 st.write(description)
 
             with col2:
-                st.metric("Price", service.get("price"))
-                st.metric("Duration", service.get("duration"))
+                st.metric("Price", format_price_irr(service.get("price")))
+                st.metric("Duration", format_duration_minutes(service.get("duration")))
 
                 if service_is_active(service):
                     st.success("Active")
@@ -252,10 +257,10 @@ def render_service_detail(service: dict):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("Price", service.get("price"))
+        st.metric("Price", format_price_irr(service.get("price")))
 
     with col2:
-        st.metric("Duration", service.get("duration"))
+        st.metric("Duration", format_duration_minutes(service.get("duration")))
 
     with col3:
         if service_is_active(service):
@@ -277,7 +282,7 @@ def render_service_detail(service: dict):
 
     with info_col2:
         st.write(f"**Provider ID:** {service.get('provider_id')}")
-        st.write(f"**Status:** {service.get('status') or '-'}")
+        st.write(f"**Status:** {status_to_table_text(service.get('status'))}")
         st.write(f"**Image:** {service.get('image_path') or 'No image'}")
 
     st.markdown("---")
@@ -299,8 +304,7 @@ def render_available_slots_for_service(service: dict):
         available_slots = fetch_available_schedules_for_service(service_id)
 
     except Exception as error:
-        st.error("Could not load available time slots.")
-        st.exception(error)
+        show_action_error(error)
         return
 
     if not available_slots:
@@ -348,24 +352,19 @@ def render_available_slots_for_service(service: dict):
             st.rerun()
 
         except Exception as error:
-            st.error("Could not create booking.")
-            st.exception(error)
+            show_action_error(error)
 
 
 def render_available_slots_table(slots: list[dict]):
     table_data = []
 
     for slot in slots:
-        start_datetime = slot.get("start_datetime")
-        end_datetime = slot.get("end_datetime")
-
         table_data.append(
             {
                 "Slot ID": slot.get("id"),
-                "Date": start_datetime.date() if start_datetime else "-",
-                "Start": start_datetime.strftime("%H:%M") if start_datetime else "-",
-                "End": end_datetime.strftime("%H:%M") if end_datetime else "-",
-                "Status": slot.get("status") or "-",
+                "Start": format_datetime(slot.get("start_datetime")),
+                "End": format_datetime(slot.get("end_datetime")),
+                "Status": status_to_table_text(slot.get("status")),
             }
         )
 
@@ -390,18 +389,11 @@ def render_booking_summary(service: dict, slot: dict):
         with col1:
             st.write(f"**Service:** {service.get('title')}")
             st.write(f"**Provider:** {service.get('provider_name')}")
-            st.write(f"**Price:** {service.get('price')}")
+            st.write(f"**Price:** {format_price_irr(service.get('price'))}")
 
         with col2:
-            st.write(
-                f"**Date:** {start_datetime.date() if start_datetime else '-'}"
-            )
-            st.write(
-                f"**Time:** "
-                f"{start_datetime.strftime('%H:%M') if start_datetime else '-'}"
-                f" - "
-                f"{end_datetime.strftime('%H:%M') if end_datetime else '-'}"
-            )
+            st.write(f"**Start:** {format_datetime(start_datetime)}")
+            st.write(f"**End:** {format_datetime(end_datetime)}")
             st.write(f"**Slot ID:** {slot.get('id')}")
 
 
@@ -413,15 +405,11 @@ def render_available_slots_selector(slots: list[dict]) -> int | None:
         start_datetime = slot.get("start_datetime")
         end_datetime = slot.get("end_datetime")
 
-        if start_datetime and end_datetime:
-            label = (
-                f"Slot #{slot_id} | "
-                f"{start_datetime.date()} | "
-                f"{start_datetime.strftime('%H:%M')} - "
-                f"{end_datetime.strftime('%H:%M')}"
-            )
-        else:
-            label = f"Slot #{slot_id}"
+        label = (
+            f"Slot #{slot_id} | "
+            f"{format_datetime(start_datetime)} - "
+            f"{format_datetime(end_datetime)}"
+        )
 
         slot_options[label] = slot_id
 
@@ -450,8 +438,7 @@ def render_customer_bookings():
         bookings = fetch_customer_bookings(customer_id)
 
     except Exception as error:
-        st.error("Could not load your bookings.")
-        st.exception(error)
+        show_action_error(error)
         return
 
     if not bookings:
@@ -468,27 +455,17 @@ def render_customer_bookings_table(bookings: list[dict]):
     table_data = []
 
     for booking in bookings:
-        slot_start = booking.get("slot_start")
-        slot_end = booking.get("slot_end")
-        cancel_deadline = booking.get("cancel_deadline")
-
         table_data.append(
             {
                 "Booking ID": booking.get("id"),
                 "Service": booking.get("service_title"),
                 "Provider": booking.get("provider_name"),
-                "Date": slot_start.date() if slot_start else "-",
-                "Time": (
-                    f"{slot_start.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}"
-                    if slot_start and slot_end
-                    else "-"
-                ),
-                "Status": booking.get("status") or "-",
-                "Payment": booking.get("payment_status") or "-",
-                "Cancel Deadline": (
-                    cancel_deadline.strftime("%Y-%m-%d %H:%M")
-                    if cancel_deadline
-                    else "-"
+                "Start": format_datetime(booking.get("slot_start")),
+                "End": format_datetime(booking.get("slot_end")),
+                "Status": status_to_table_text(booking.get("status")),
+                "Payment": status_to_table_text(booking.get("payment_status")),
+                "Cancel Deadline": format_datetime(
+                    booking.get("cancel_deadline")
                 ),
             }
         )
@@ -519,28 +496,24 @@ def render_customer_booking_cards(bookings: list[dict]):
             with col1:
                 st.write(f"**Service:** {booking.get('service_title')}")
                 st.write(f"**Provider:** {booking.get('provider_name')}")
-                st.write(f"**Price:** {booking.get('service_price') or '-'}")
+                st.write(f"**Price:** {format_price_irr(booking.get('service_price'))}")
 
             with col2:
+                st.write(f"**Start:** {format_datetime(slot_start)}")
+                st.write(f"**End:** {format_datetime(slot_end)}")
                 st.write(
-                    f"**Date:** {slot_start.date() if slot_start else '-'}"
-                )
-                st.write(
-                    f"**Time:** "
-                    f"{slot_start.strftime('%H:%M') if slot_start else '-'}"
-                    f" - "
-                    f"{slot_end.strftime('%H:%M') if slot_end else '-'}"
-                )
-                st.write(
-                    f"**Cancel Deadline:** "
-                    f"{cancel_deadline.strftime('%Y-%m-%d %H:%M') if cancel_deadline else '-'}"
+                    f"**Cancel Deadline:** {format_datetime(cancel_deadline)}"
                 )
 
             with col3:
-                st.write(f"**Status:** {booking.get('status') or '-'}")
-                st.write(f"**Payment:** {booking.get('payment_status') or '-'}")
+                st.write(
+                    f"**Status:** {status_to_table_text(booking.get('status'))}"
+                )
+                st.write(
+                    f"**Payment:** {status_to_table_text(booking.get('payment_status'))}"
+                )
                 st.write(f"**Slot ID:** {booking.get('schedule_id') or '-'}")
-
+                
             can_cancel, reason = can_customer_cancel_booking(booking)
 
             if can_cancel:
@@ -568,8 +541,7 @@ def render_customer_booking_cards(bookings: list[dict]):
                         st.rerun()
 
                     except Exception as error:
-                        st.error("Could not cancel booking.")
-                        st.exception(error)
+                        show_action_error(error)
 
             else:
                 st.info(reason)

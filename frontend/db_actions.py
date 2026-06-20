@@ -13,11 +13,17 @@ def run_db_action(callback: Callable[[Session], T]) -> T:
     """
     Open one short-lived SQLAlchemy session for one Streamlit action/query.
 
-    Do not store ORM objects in st.session_state.
-    Return plain dict/list data from frontend helpers.
+    Rules:
+    - Do not store ORM objects in st.session_state.
+    - Return plain dict/list data from frontend helpers.
+    - Let UI layer decide how to display errors.
     """
     with get_session() as session:
-        return callback(session)
+        try:
+            return callback(session)
+        except Exception:
+            session.rollback()
+            raise
 
 
 def get_actor(session: Session, user_id: int) -> User:
