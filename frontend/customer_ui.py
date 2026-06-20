@@ -26,6 +26,14 @@ from frontend.ui_helpers import (
     show_action_error,
     status_to_table_text,
 )
+from frontend.customer_review_helpers import (
+    enrich_services_with_review_summary,
+    fetch_service_review_summary,
+    format_rating,
+)
+
+
+
 
 def render_customer_page(selected_page: str):
     if selected_page == "Browse Services":
@@ -54,6 +62,13 @@ def render_browse_services():
     except AppError as error:
         st.error(str(error))
         return
+
+    except Exception as error:
+        show_action_error(error)
+        return
+
+    try:
+        services = enrich_services_with_review_summary(services)
 
     except Exception as error:
         show_action_error(error)
@@ -188,6 +203,10 @@ def render_services_table(services: list[dict]):
                 "Price": format_price_irr(service.get("price")),
                 "Duration": format_duration_minutes(service.get("duration")),
                 "Status": status_to_table_text(service.get("status")),
+                "Rating": format_rating(
+                    service.get("average_rating"),
+                    service.get("review_count"),
+                ),
             }
         )
 
@@ -211,16 +230,24 @@ def render_service_cards(services: list[dict]):
             with col1:
                 st.markdown(f"### {service.get('title')}")
                 st.caption(
-                    f"Category: {service.get('category')} | "
+                    f"Category: {service.get('category') or 'Uncategorized'} | "
                     f"Provider: {service.get('provider_name')}"
                 )
 
                 description = service.get("description") or "No description provided."
                 st.write(description)
 
+                st.write(
+                    "**Rating:** "
+                    f"{format_rating(service.get('average_rating'), service.get('review_count'))}"
+                )
+
             with col2:
                 st.metric("Price", format_price_irr(service.get("price")))
-                st.metric("Duration", format_duration_minutes(service.get("duration")))
+                st.metric(
+                    "Duration",
+                    format_duration_minutes(service.get("duration")),
+                )
 
                 if service_is_active(service):
                     st.success("Active")
@@ -236,6 +263,34 @@ def render_service_cards(services: list[dict]):
                 st.rerun()
 
 
+def render_service_image(service: dict):
+    image_path = service.get("image_path")
+    safe_image_path = Path(image_path) if image_path else None
+
+    if safe_image_path and safe_image_path.exists():
+        st.image(str(safe_image_path), use_container_width=True)
+        return
+
+    st.info("No service image uploaded. Showing default service placeholder.")
+    st.markdown(
+        """
+        <div style="
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 32px;
+            text-align: center;
+            background-color: #fafafa;
+            margin-bottom: 16px;
+        ">
+            <div style="font-size: 48px;">🛠️</div>
+            <div style="font-size: 18px; font-weight: 600;">Service Image</div>
+            <div style="font-size: 14px; color: #666;">Default placeholder</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_service_detail(service: dict):
     if st.button("← Back to Browse"):
         clear_selected_service()
@@ -248,13 +303,9 @@ def render_service_detail(service: dict):
         "Full service information.",
     )
 
-    image_path = service.get("image_path")
-    safe_image_path = Path(image_path) if image_path else None
+    render_service_image(service)
 
-    if safe_image_path and safe_image_path.exists():
-        st.image(str(safe_image_path), use_container_width=True)
-
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric("Price", format_price_irr(service.get("price")))
@@ -263,6 +314,15 @@ def render_service_detail(service: dict):
         st.metric("Duration", format_duration_minutes(service.get("duration")))
 
     with col3:
+        st.metric(
+            "Rating",
+            format_rating(
+                service.get("average_rating"),
+                service.get("review_count"),
+            ),
+        )
+
+    with col4:
         if service_is_active(service):
             st.success("Active")
         else:
@@ -277,17 +337,60 @@ def render_service_detail(service: dict):
 
     with info_col1:
         st.write(f"**Service ID:** {service.get('id')}")
-        st.write(f"**Category:** {service.get('category')}")
+        st.write(f"**Category:** {service.get('category') or 'Uncategorized'}")
         st.write(f"**Provider:** {service.get('provider_name')}")
 
     with info_col2:
         st.write(f"**Provider ID:** {service.get('provider_id')}")
         st.write(f"**Status:** {status_to_table_text(service.get('status'))}")
-        st.write(f"**Image:** {service.get('image_path') or 'No image'}")
+        st.write(f"**Image:** {service.get('image_path') or 'Default placeholder'}")
+
+    render_service_reviews(service)
 
     st.markdown("---")
 
     render_available_slots_for_service(service)
+
+
+def render_service_reviews(service: dict):
+    st.markdown("### Recent Reviews")
+
+    service_id = service.get("id")
+
+    if not service_id:
+        st.info("Reviews are not available for this service.")
+        return
+
+    try:
+        summary = fetch_service_review_summary(service_id)
+
+    except Exception as error:
+        show_action_error(error)
+        return
+
+    average_rating = summary.get("average_rating", 0.0)
+    review_count = summary.get("review_count", 0)
+    recent_reviews = summary.get("recent_reviews", [])
+
+    st.write(f"**Average rating:** {format_rating(average_rating, review_count)}")
+
+    if not recent_reviews:
+        st.info("No reviews have been submitted for this service yet.")
+        return
+
+    for review in recent_reviews:
+        with st.container(border=True):
+            st.write(
+                f"**{review.get('rating')}/5** by "
+                f"{review.get('customer_name')}"
+            )
+
+            if review.get("comment"):
+                st.write(review.get("comment"))
+            else:
+                st.caption("No comment provided.")
+
+            st.caption(review.get("created_at_text") or "-")
 
 
 def render_available_slots_for_service(service: dict):
