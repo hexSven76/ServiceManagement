@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from frontend.components import page_title, placeholder_page
 from frontend.provider_service_helpers import (
@@ -398,9 +398,8 @@ def render_provider_schedule():
 
     create_schedule_form(
         provider_id=provider_id,
-        selected_service_id=selected_service_id,
+        selected_service=selected_service,
     )
-
     st.markdown("---")
 
     provider_service_ids = [service.get("id") for service in services]
@@ -429,8 +428,32 @@ def render_provider_schedule():
     )
 
 
-def create_schedule_form(provider_id: int, selected_service_id: int):
+def create_schedule_form(provider_id: int, selected_service: dict):
+    selected_service_id = selected_service.get("id")
+
+    raw_duration = (
+        selected_service.get("duration_minutes")
+        or selected_service.get("duration")
+        or 0
+    )
+
+    try:
+        duration_minutes = int(raw_duration)
+    except (TypeError, ValueError):
+        duration_minutes = 0
+
     with st.expander("➕ Create New Time Slot", expanded=True):
+        st.write(f"**Selected service:** {selected_service.get('title')}")
+        st.write(f"**Service duration:** {duration_minutes} minutes")
+
+        if not selected_service_id:
+            st.error("Selected service is invalid.")
+            return
+
+        if duration_minutes <= 0:
+            st.error("This service has no valid duration. Edit the service duration first.")
+            return
+
         with st.form("create_schedule_form"):
             slot_date = st.date_input("Date")
 
@@ -442,41 +465,47 @@ def create_schedule_form(provider_id: int, selected_service_id: int):
                     value=time(9, 0),
                 )
 
+            start_datetime_preview = datetime.combine(slot_date, start_time_value)
+            end_datetime_preview = start_datetime_preview + timedelta(
+                minutes=duration_minutes
+            )
+
             with col2:
-                end_time_value = st.time_input(
+                st.text_input(
                     "End Time",
-                    value=time(10, 0),
+                    value=end_datetime_preview.strftime("%H:%M"),
+                    disabled=True,
+                    help="End time is calculated automatically from service duration.",
                 )
 
             with col3:
                 is_active = st.checkbox("Active", value=True)
 
+            st.caption(
+                "The end time is calculated automatically because the backend requires "
+                "slot duration to exactly match service duration."
+            )
+
             submitted = st.form_submit_button("Create Time Slot")
 
-        if submitted:
-            start_datetime = datetime.combine(slot_date, start_time_value)
-            end_datetime = datetime.combine(slot_date, end_time_value)
+            if submitted:
+                start_datetime = datetime.combine(slot_date, start_time_value)
+                end_datetime = start_datetime + timedelta(minutes=duration_minutes)
 
-            if start_datetime >= end_datetime:
-                st.warning("Start time must be before end time.")
-                return
+                try:
+                    create_schedule_slot(
+                        service_id=selected_service_id,
+                        provider_id=provider_id,
+                        start_datetime=start_datetime,
+                        end_datetime=end_datetime,
+                        is_active=is_active,
+                    )
+                    st.success("Schedule slot created successfully.")
+                    st.rerun()
 
-            try:
-                create_schedule_slot(
-                    service_id=selected_service_id,
-                    provider_id=provider_id,
-                    start_datetime=start_datetime,
-                    end_datetime=end_datetime,
-                    is_active=is_active,
-                )
-
-                st.success("Schedule slot created successfully.")
-                st.rerun()
-
-            except Exception as error:
-                st.error("Could not create schedule slot.")
-                st.exception(error)
-
+                except Exception as error:
+                    st.error("Could not create schedule slot.")
+                    st.exception(error)
 
 def render_schedule_table(schedules: list[dict]):
     st.subheader("Schedule Slots Table")
