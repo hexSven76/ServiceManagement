@@ -32,6 +32,10 @@ from frontend.customer_review_helpers import (
     fetch_service_review_summary,
     format_rating,
 )
+from frontend.payment_helpers import (
+    fetch_booking_payment,
+    pay_customer_booking,
+)
 
 
 
@@ -703,8 +707,8 @@ def can_customer_pay_booking(booking: dict) -> bool:
     payment_status = get_payment_status_upper(booking)
 
     return (
-        status in {"CONFIRMED", "APPROVED"}
-        and payment_status not in {"PAID", "REFUNDED"}
+        payment_status != "PAID"
+        and status not in {"CANCELED", "CANCELLED", "REJECTED"}
     )
 
 
@@ -915,6 +919,13 @@ def render_customer_bookings_table(bookings: list[dict]):
                 "End": format_datetime(booking.get("slot_end")),
                 "Status": status_to_table_text(booking.get("status")),
                 "Payment": status_to_table_text(booking.get("payment_status")),
+                "Payment Action": (
+                    "Paid"
+                    if get_payment_status_upper(booking) == "PAID"
+                    else "Available"
+                    if can_customer_pay_booking(booking)
+                    else "Unavailable"
+                ),
                 "Price": format_price_irr(booking.get("service_price")),
                 "Cancel Deadline": format_datetime(
                     booking.get("cancel_deadline")
@@ -1046,34 +1057,92 @@ def render_customer_cancel_action(booking: dict):
 
 def render_customer_payment_action_placeholder(booking: dict):
     booking_id = booking.get("id")
+    payment_status = get_payment_status_upper(booking)
 
-    if can_customer_pay_booking(booking):
-        st.button(
-            "Pay",
-            key=f"pay_booking_placeholder_{booking_id}",
-            use_container_width=True,
-            disabled=True,
-        )
-        st.caption("Payment will be added in CUS-NEXT-05.")
+    if payment_status == "PAID":
+        render_paid_booking_summary(booking)
         return
 
-    if can_customer_download_receipt(booking):
+    if not can_customer_pay_booking(booking):
         st.button(
-            "Download Receipt",
-            key=f"receipt_booking_placeholder_{booking_id}",
+            "Pay",
+            key=f"disabled_pay_booking_{booking_id}",
             use_container_width=True,
             disabled=True,
         )
-        st.caption("Receipt download will be added in CUS-NEXT-06.")
+        st.caption("Payment is not available for this booking state.")
+        return
+
+    with st.expander("Mock Payment", expanded=False):
+        st.write(
+            f"**Amount:** {format_price_irr(booking.get('service_price'))}"
+        )
+
+        payment_reference = st.text_input(
+            "Payment Reference",
+            placeholder="Optional reference, e.g. TEST-12345",
+            key=f"payment_reference_{booking_id}",
+        )
+
+        confirm_payment = st.checkbox(
+            "I confirm this mock payment.",
+            key=f"confirm_payment_{booking_id}",
+        )
+
+        if st.button(
+            "Pay Now",
+            key=f"pay_booking_{booking_id}",
+            use_container_width=True,
+            type="primary",
+            disabled=not confirm_payment,
+        ):
+            try:
+                payment = pay_customer_booking(
+                    customer_id=st.session_state.user_id,
+                    booking_id=booking_id,
+                    payment_reference=payment_reference.strip() or None,
+                )
+
+                st.session_state.customer_booking_message = (
+                    f"Booking #{booking_id} paid successfully. "
+                    f"Amount: {format_price_irr(payment.get('amount'))}. "
+                    f"Paid at: {format_datetime(payment.get('paid_at'))}."
+                )
+
+                st.rerun()
+
+            except Exception as error:
+                show_action_error(error)
+
+
+def render_paid_booking_summary(booking: dict):
+    booking_id = booking.get("id")
+
+    try:
+        payment = fetch_booking_payment(booking_id)
+
+    except Exception as error:
+        show_action_error(error)
         return
 
     st.button(
-        "Pay",
-        key=f"disabled_pay_booking_{booking_id}",
+        "Paid",
+        key=f"paid_booking_{booking_id}",
         use_container_width=True,
         disabled=True,
     )
-    st.caption("Payment is not available for this booking state.")
+
+    if payment is None:
+        st.caption("Payment is marked as PAID, but payment details were not found.")
+        return
+
+    st.caption(
+        f"Paid {format_price_irr(payment.get('amount'))} "
+        f"at {format_datetime(payment.get('paid_at'))}."
+    )
+
+    if payment.get("payment_reference"):
+        st.caption(f"Reference: {payment.get('payment_reference')}")
 
 
 def render_customer_review_action_placeholder(booking: dict):
