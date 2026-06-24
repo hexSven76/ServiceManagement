@@ -393,6 +393,22 @@ def render_service_reviews(service: dict):
             st.caption(review.get("created_at_text") or "-")
 
 
+def get_session_role_text() -> str:
+    role = st.session_state.get("role")
+
+    if role is None:
+        return ""
+
+    if hasattr(role, "value"):
+        return str(role.value).upper()
+
+    return str(role).split(".")[-1].upper()
+
+
+def is_current_user_customer() -> bool:
+    return get_session_role_text() == "CUSTOMER"
+
+
 def render_available_slots_for_service(service: dict):
     st.subheader("Available Time Slots")
 
@@ -401,7 +417,19 @@ def render_available_slots_for_service(service: dict):
     if success_message:
         st.success(success_message)
 
+    if not is_current_user_customer():
+        st.warning("Only customers can book service slots.")
+        return
+
+    if not service_is_active(service):
+        st.warning("This service is currently inactive and cannot be booked.")
+        return
+
     service_id = service.get("id")
+
+    if not service_id:
+        st.error("Service ID is missing. Booking is not available.")
+        return
 
     try:
         available_slots = fetch_available_schedules_for_service(service_id)
@@ -410,9 +438,19 @@ def render_available_slots_for_service(service: dict):
         show_action_error(error)
         return
 
+    available_slots = sorted(
+        available_slots,
+        key=lambda slot: slot.get("start_datetime") or "",
+    )
+
     if not available_slots:
         st.info("No available time slots for this service yet.")
         return
+
+    st.caption(
+        "Select one available slot below. The booking will be created as PENDING "
+        "until the provider approves or rejects it."
+    )
 
     render_available_slots_table(available_slots)
     selected_slot_id = render_available_slots_selector(available_slots)
@@ -435,10 +473,16 @@ def render_available_slots_for_service(service: dict):
         slot=selected_slot,
     )
 
+    confirm_booking = st.checkbox(
+        "I confirm that I want to book this selected service and time slot.",
+        key=f"confirm_booking_service_{service_id}_slot_{selected_slot_id}",
+    )
+
     if st.button(
         "Book Selected Slot",
         use_container_width=True,
         type="primary",
+        disabled=not confirm_booking,
     ):
         try:
             booking = create_customer_booking(
@@ -449,7 +493,8 @@ def render_available_slots_for_service(service: dict):
 
             st.session_state.booking_success_message = (
                 f"Booking #{booking.get('id')} created successfully. "
-                f"Status: {booking.get('status') or 'PENDING'}."
+                f"Status: {status_to_table_text(booking.get('status') or 'PENDING')}. "
+                f"Cancel deadline: {format_datetime(booking.get('cancel_deadline'))}."
             )
 
             st.rerun()
