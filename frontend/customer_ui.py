@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -588,28 +588,114 @@ def get_unique_booking_values(bookings: list[dict], key: str) -> list[str]:
     return sorted(values)
 
 
+def normalize_datetime_to_utc_naive(value):
+    """
+    Normalize DB/string datetime values so countdown comparisons are stable.
+
+    Backend datetimes are usually naive UTC.
+    Streamlit/UI may sometimes receive strings.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    return value
+
+
+def get_utc_now_naive() -> datetime:
+    return datetime.utcnow()
+
+
+def get_cancel_remaining_minutes(cancel_deadline) -> int | None:
+    deadline = normalize_datetime_to_utc_naive(cancel_deadline)
+
+    if deadline is None:
+        return None
+
+    remaining = deadline - get_utc_now_naive()
+    return int(remaining.total_seconds() // 60)
+
+
 def get_cancel_remaining_text(cancel_deadline) -> str:
-    if cancel_deadline is None:
+    remaining_minutes = get_cancel_remaining_minutes(cancel_deadline)
+
+    if remaining_minutes is None:
         return "No cancellation deadline"
 
-    if isinstance(cancel_deadline, str):
-        return format_datetime(cancel_deadline)
-
-    now = datetime.utcnow()
-
-    if cancel_deadline <= now:
+    if remaining_minutes <= 0:
         return "Cancellation deadline passed"
 
-    remaining = cancel_deadline - now
-    total_minutes = int(remaining.total_seconds() // 60)
+    days = remaining_minutes // (24 * 60)
+    hours = (remaining_minutes % (24 * 60)) // 60
+    minutes = remaining_minutes % 60
 
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m remaining"
 
     if hours > 0:
         return f"{hours}h {minutes}m remaining"
 
     return f"{minutes}m remaining"
+
+
+def is_cancel_deadline_active(cancel_deadline) -> bool:
+    remaining_minutes = get_cancel_remaining_minutes(cancel_deadline)
+
+    if remaining_minutes is None:
+        return False
+
+    return remaining_minutes > 0
+
+
+def get_cancel_countdown_status(cancel_deadline) -> str:
+    remaining_minutes = get_cancel_remaining_minutes(cancel_deadline)
+
+    if remaining_minutes is None:
+        return "missing"
+
+    if remaining_minutes <= 0:
+        return "expired"
+
+    if remaining_minutes <= 30:
+        return "urgent"
+
+    if remaining_minutes <= 60:
+        return "warning"
+
+    return "safe"
+
+
+def render_cancel_countdown(booking: dict):
+    cancel_deadline = booking.get("cancel_deadline")
+
+    deadline_text = format_datetime(cancel_deadline)
+    remaining_text = get_cancel_remaining_text(cancel_deadline)
+    countdown_status = get_cancel_countdown_status(cancel_deadline)
+
+    st.write(f"**Cancel Deadline:** {deadline_text}")
+
+    if countdown_status == "safe":
+        st.success(f"Cancellation available: {remaining_text}")
+
+    elif countdown_status == "warning":
+        st.warning(f"Cancellation window is getting close: {remaining_text}")
+
+    elif countdown_status == "urgent":
+        st.error(f"Cancellation window almost expired: {remaining_text}")
+
+    elif countdown_status == "expired":
+        st.error("Cancellation deadline has passed.")
+
+    else:
+        st.info("Cancellation deadline is not available.")
 
 
 def can_customer_pay_booking(booking: dict) -> bool:
@@ -836,6 +922,9 @@ def render_customer_bookings_table(bookings: list[dict]):
                 "Cancel Time Left": get_cancel_remaining_text(
                     booking.get("cancel_deadline")
                 ),
+                "Cancel Status": get_cancel_countdown_status(
+                    booking.get("cancel_deadline")
+                ).upper(),
             }
         )
 
@@ -873,11 +962,7 @@ def render_customer_booking_cards(bookings: list[dict]):
             with col2:
                 st.write(f"**Start:** {format_datetime(slot_start)}")
                 st.write(f"**End:** {format_datetime(slot_end)}")
-                st.write(
-                    f"**Cancel Deadline:** "
-                    f"{format_datetime(cancel_deadline)}"
-                )
-                st.caption(get_cancel_remaining_text(cancel_deadline))
+                render_cancel_countdown(booking)
 
             with col3:
                 st.write(
@@ -906,22 +991,35 @@ def render_customer_booking_cards(bookings: list[dict]):
 
 def render_customer_cancel_action(booking: dict):
     booking_id = booking.get("id")
+    cancel_deadline = booking.get("cancel_deadline")
 
     can_cancel, reason = can_customer_cancel_booking(booking)
+    deadline_active = is_cancel_deadline_active(cancel_deadline)
 
-    if not can_cancel:
+    if not can_cancel or not deadline_active:
         st.button(
             "Cancel Booking",
             key=f"disabled_cancel_booking_{booking_id}",
             use_container_width=True,
             disabled=True,
         )
-        st.caption(reason)
+
+        if not deadline_active:
+            st.caption("Cancellation is disabled because the deadline has passed.")
+        else:
+            st.caption(reason)
+
         return
 
     confirm_cancel = st.checkbox(
         "Confirm cancellation",
         key=f"confirm_cancel_booking_{booking_id}",
+    )
+
+    st.caption(
+        f"Cancellation available until "
+        f"{format_datetime(cancel_deadline)} "
+        f"({get_cancel_remaining_text(cancel_deadline)})."
     )
 
     if st.button(
