@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -569,6 +570,210 @@ def render_available_slots_selector(slots: list[dict]) -> int | None:
     return slot_options[selected_label]
 
 
+def get_booking_status_upper(booking: dict) -> str:
+    return str(booking.get("status") or "").upper()
+
+
+def get_payment_status_upper(booking: dict) -> str:
+    return str(booking.get("payment_status") or "").upper()
+
+
+def get_unique_booking_values(bookings: list[dict], key: str) -> list[str]:
+    values = {
+        status_to_table_text(booking.get(key))
+        for booking in bookings
+        if booking.get(key)
+    }
+
+    return sorted(values)
+
+
+def get_cancel_remaining_text(cancel_deadline) -> str:
+    if cancel_deadline is None:
+        return "No cancellation deadline"
+
+    if isinstance(cancel_deadline, str):
+        return format_datetime(cancel_deadline)
+
+    now = datetime.utcnow()
+
+    if cancel_deadline <= now:
+        return "Cancellation deadline passed"
+
+    remaining = cancel_deadline - now
+    total_minutes = int(remaining.total_seconds() // 60)
+
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+
+    if hours > 0:
+        return f"{hours}h {minutes}m remaining"
+
+    return f"{minutes}m remaining"
+
+
+def can_customer_pay_booking(booking: dict) -> bool:
+    status = get_booking_status_upper(booking)
+    payment_status = get_payment_status_upper(booking)
+
+    return (
+        status in {"CONFIRMED", "APPROVED"}
+        and payment_status not in {"PAID", "REFUNDED"}
+    )
+
+
+def can_customer_download_receipt(booking: dict) -> bool:
+    return get_payment_status_upper(booking) == "PAID"
+
+
+def can_customer_review_booking(booking: dict) -> bool:
+    status = get_booking_status_upper(booking)
+
+    return status in {"CONFIRMED", "APPROVED", "COMPLETED"}
+
+
+def filter_customer_bookings(
+    bookings: list[dict],
+    selected_status: str,
+    selected_payment: str,
+    search_text: str,
+    sort_order: str,
+) -> list[dict]:
+    search_text = search_text.strip().lower()
+
+    filtered = []
+
+    for booking in bookings:
+        booking_status = status_to_table_text(booking.get("status"))
+        payment_status = status_to_table_text(booking.get("payment_status"))
+
+        if selected_status != "All" and booking_status != selected_status:
+            continue
+
+        if selected_payment != "All" and payment_status != selected_payment:
+            continue
+
+        if search_text:
+            searchable_text = " ".join(
+                [
+                    str(booking.get("service_title") or ""),
+                    str(booking.get("provider_name") or ""),
+                    str(booking.get("status") or ""),
+                    str(booking.get("payment_status") or ""),
+                ]
+            ).lower()
+
+            if search_text not in searchable_text:
+                continue
+
+        filtered.append(booking)
+
+    if sort_order == "Newest first":
+        filtered.sort(
+            key=lambda booking: booking.get("created_at") or datetime.min,
+            reverse=True,
+        )
+
+    elif sort_order == "Oldest first":
+        filtered.sort(
+            key=lambda booking: booking.get("created_at") or datetime.min,
+        )
+
+    elif sort_order == "Upcoming slot first":
+        filtered.sort(
+            key=lambda booking: booking.get("slot_start") or datetime.max,
+        )
+
+    return filtered
+
+
+def render_customer_booking_metrics(bookings: list[dict]):
+    total_bookings = len(bookings)
+
+    active_bookings = sum(
+        1
+        for booking in bookings
+        if get_booking_status_upper(booking)
+        in {"PENDING", "CONFIRMED", "APPROVED"}
+    )
+
+    paid_bookings = sum(
+        1
+        for booking in bookings
+        if get_payment_status_upper(booking) == "PAID"
+    )
+
+    canceled_bookings = sum(
+        1
+        for booking in bookings
+        if get_booking_status_upper(booking) in {"CANCELED", "CANCELLED"}
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Total Bookings", total_bookings)
+
+    with col2:
+        st.metric("Active", active_bookings)
+
+    with col3:
+        st.metric("Paid", paid_bookings)
+
+    with col4:
+        st.metric("Canceled", canceled_bookings)
+
+
+def render_customer_booking_filters(bookings: list[dict]) -> list[dict]:
+    st.subheader("Filters")
+
+    booking_statuses = get_unique_booking_values(bookings, "status")
+    payment_statuses = get_unique_booking_values(bookings, "payment_status")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        selected_status = st.selectbox(
+            "Booking Status",
+            ["All"] + booking_statuses,
+        )
+
+    with col2:
+        selected_payment = st.selectbox(
+            "Payment Status",
+            ["All"] + payment_statuses,
+        )
+
+    with col3:
+        sort_order = st.selectbox(
+            "Sort",
+            [
+                "Newest first",
+                "Oldest first",
+                "Upcoming slot first",
+            ],
+        )
+
+    search_text = st.text_input(
+        "Search bookings",
+        placeholder="Search by service, provider, status...",
+    )
+
+    filtered_bookings = filter_customer_bookings(
+        bookings=bookings,
+        selected_status=selected_status,
+        selected_payment=selected_payment,
+        search_text=search_text,
+        sort_order=sort_order,
+    )
+
+    st.caption(
+        f"Showing {len(filtered_bookings)} of {len(bookings)} booking(s)."
+    )
+
+    return filtered_bookings
+
+
 def render_customer_bookings():
     page_title(
         "My Bookings",
@@ -593,8 +798,20 @@ def render_customer_bookings():
         st.info("You have not created any bookings yet.")
         return
 
-    render_customer_bookings_table(bookings)
-    render_customer_booking_cards(bookings)
+    render_customer_booking_metrics(bookings)
+
+    st.markdown("---")
+
+    filtered_bookings = render_customer_booking_filters(bookings)
+
+    if not filtered_bookings:
+        st.info("No bookings match your selected filters.")
+        return
+
+    st.markdown("---")
+
+    render_customer_bookings_table(filtered_bookings)
+    render_customer_booking_cards(filtered_bookings)
 
 
 def render_customer_bookings_table(bookings: list[dict]):
@@ -612,7 +829,11 @@ def render_customer_bookings_table(bookings: list[dict]):
                 "End": format_datetime(booking.get("slot_end")),
                 "Status": status_to_table_text(booking.get("status")),
                 "Payment": status_to_table_text(booking.get("payment_status")),
+                "Price": format_price_irr(booking.get("service_price")),
                 "Cancel Deadline": format_datetime(
+                    booking.get("cancel_deadline")
+                ),
+                "Cancel Time Left": get_cancel_remaining_text(
                     booking.get("cancel_deadline")
                 ),
             }
@@ -644,55 +865,139 @@ def render_customer_booking_cards(bookings: list[dict]):
             with col1:
                 st.write(f"**Service:** {booking.get('service_title')}")
                 st.write(f"**Provider:** {booking.get('provider_name')}")
-                st.write(f"**Price:** {format_price_irr(booking.get('service_price'))}")
+                st.write(
+                    f"**Price:** "
+                    f"{format_price_irr(booking.get('service_price'))}"
+                )
 
             with col2:
                 st.write(f"**Start:** {format_datetime(slot_start)}")
                 st.write(f"**End:** {format_datetime(slot_end)}")
                 st.write(
-                    f"**Cancel Deadline:** {format_datetime(cancel_deadline)}"
+                    f"**Cancel Deadline:** "
+                    f"{format_datetime(cancel_deadline)}"
                 )
+                st.caption(get_cancel_remaining_text(cancel_deadline))
 
             with col3:
                 st.write(
-                    f"**Status:** {status_to_table_text(booking.get('status'))}"
+                    f"**Status:** "
+                    f"{status_to_table_text(booking.get('status'))}"
                 )
                 st.write(
-                    f"**Payment:** {status_to_table_text(booking.get('payment_status'))}"
+                    f"**Payment:** "
+                    f"{status_to_table_text(booking.get('payment_status'))}"
                 )
                 st.write(f"**Slot ID:** {booking.get('schedule_id') or '-'}")
-                
-            can_cancel, reason = can_customer_cancel_booking(booking)
 
-            if can_cancel:
-                confirm_cancel = st.checkbox(
-                    "Confirm cancellation",
-                    key=f"confirm_cancel_booking_{booking_id}",
-                )
+            st.markdown("#### Available Actions")
 
-                if st.button(
-                    "Cancel Booking",
-                    key=f"cancel_booking_{booking_id}",
-                    use_container_width=True,
-                    disabled=not confirm_cancel,
-                ):
-                    try:
-                        cancel_customer_booking(
-                            booking_id=booking_id,
-                            customer_id=st.session_state.user_id,
-                        )
+            action_col1, action_col2, action_col3 = st.columns(3)
 
-                        st.session_state.customer_booking_message = (
-                            f"Booking #{booking_id} canceled successfully."
-                        )
+            with action_col1:
+                render_customer_cancel_action(booking)
 
-                        st.rerun()
+            with action_col2:
+                render_customer_payment_action_placeholder(booking)
 
-                    except Exception as error:
-                        show_action_error(error)
+            with action_col3:
+                render_customer_review_action_placeholder(booking)
 
-            else:
-                st.info(reason)
+
+def render_customer_cancel_action(booking: dict):
+    booking_id = booking.get("id")
+
+    can_cancel, reason = can_customer_cancel_booking(booking)
+
+    if not can_cancel:
+        st.button(
+            "Cancel Booking",
+            key=f"disabled_cancel_booking_{booking_id}",
+            use_container_width=True,
+            disabled=True,
+        )
+        st.caption(reason)
+        return
+
+    confirm_cancel = st.checkbox(
+        "Confirm cancellation",
+        key=f"confirm_cancel_booking_{booking_id}",
+    )
+
+    if st.button(
+        "Cancel Booking",
+        key=f"cancel_booking_{booking_id}",
+        use_container_width=True,
+        disabled=not confirm_cancel,
+    ):
+        try:
+            cancel_customer_booking(
+                booking_id=booking_id,
+                customer_id=st.session_state.user_id,
+            )
+
+            st.session_state.customer_booking_message = (
+                f"Booking #{booking_id} canceled successfully."
+            )
+
+            st.rerun()
+
+        except Exception as error:
+            show_action_error(error)
+
+
+def render_customer_payment_action_placeholder(booking: dict):
+    booking_id = booking.get("id")
+
+    if can_customer_pay_booking(booking):
+        st.button(
+            "Pay",
+            key=f"pay_booking_placeholder_{booking_id}",
+            use_container_width=True,
+            disabled=True,
+        )
+        st.caption("Payment will be added in CUS-NEXT-05.")
+        return
+
+    if can_customer_download_receipt(booking):
+        st.button(
+            "Download Receipt",
+            key=f"receipt_booking_placeholder_{booking_id}",
+            use_container_width=True,
+            disabled=True,
+        )
+        st.caption("Receipt download will be added in CUS-NEXT-06.")
+        return
+
+    st.button(
+        "Pay",
+        key=f"disabled_pay_booking_{booking_id}",
+        use_container_width=True,
+        disabled=True,
+    )
+    st.caption("Payment is not available for this booking state.")
+
+
+def render_customer_review_action_placeholder(booking: dict):
+    booking_id = booking.get("id")
+
+    if can_customer_review_booking(booking):
+        st.button(
+            "Review",
+            key=f"review_booking_placeholder_{booking_id}",
+            use_container_width=True,
+            disabled=True,
+        )
+        st.caption("Reviews will be added in CUS-NEXT-07.")
+        return
+
+    st.button(
+        "Review",
+        key=f"disabled_review_booking_{booking_id}",
+        use_container_width=True,
+        disabled=True,
+    )
+    st.caption("Review is not available for this booking state.")
 
 
 def render_customer_profile():
