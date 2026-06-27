@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from frontend.components import page_title, placeholder_page
 from frontend.provider_service_helpers import (
@@ -21,6 +21,13 @@ from frontend.booking_helpers import (
     cancel_provider_booking,
     fetch_provider_bookings,
     reject_provider_booking,
+)
+from frontend.ui_helpers import (
+    format_datetime,
+    format_duration_minutes,
+    format_price_irr,
+    show_action_error,
+    status_to_table_text,
 )
 from frontend.service_helpers import service_is_active
 
@@ -102,8 +109,7 @@ def render_provider_services():
         services = fetch_provider_services(provider_id)
 
     except Exception as error:
-        st.error("Could not load provider services.")
-        st.exception(error)
+        show_action_error(error)
         return
 
     if not services:
@@ -163,8 +169,7 @@ def create_service_form(provider_id: int):
                 st.rerun()
 
             except Exception as error:
-                st.error("Could not create service.")
-                st.exception(error)
+                show_action_error(error)
 
 
 def render_provider_services_table(services: list[dict]):
@@ -178,9 +183,9 @@ def render_provider_services_table(services: list[dict]):
                 "ID": service.get("id"),
                 "Title": service.get("title"),
                 "Category": service.get("category"),
-                "Price": service.get("price"),
-                "Duration": service.get("duration"),
-                "Status": service.get("status") or "-",
+                "Price": format_price_irr(service.get("price")),
+                "Duration": format_duration_minutes(service.get("duration")),
+                "Status": status_to_table_text(service.get("status")),
             }
         )
 
@@ -206,10 +211,10 @@ def render_provider_service_cards(services: list[dict], provider_id: int):
             col1, col2, col3 = st.columns(3)
 
             with col1:
-                st.metric("Price", service.get("price"))
+                st.metric("Price", format_price_irr(service.get("price")))
 
             with col2:
-                st.metric("Duration", service.get("duration"))
+                st.metric("Duration", format_duration_minutes(service.get("duration")))
 
             with col3:
                 if service_is_active(service):
@@ -240,8 +245,7 @@ def render_provider_service_cards(services: list[dict], provider_id: int):
                             st.rerun()
 
                         except Exception as error:
-                            st.error("Could not deactivate service.")
-                            st.exception(error)
+                            show_action_error(error)
                 else:
                     if st.button(
                         "Activate",
@@ -258,8 +262,7 @@ def render_provider_service_cards(services: list[dict], provider_id: int):
                             st.rerun()
 
                         except Exception as error:
-                            st.error("Could not activate service.")
-                            st.exception(error)
+                            show_action_error(error)
 
             with action_col2:
                 confirm_delete = st.checkbox(
@@ -282,8 +285,7 @@ def render_provider_service_cards(services: list[dict], provider_id: int):
                         st.rerun()
 
                     except Exception as error:
-                        st.error("Could not delete service.")
-                        st.exception(error)
+                        show_action_error(error)
 
 
 def edit_service_form(service: dict, provider_id: int):
@@ -359,8 +361,7 @@ def edit_service_form(service: dict, provider_id: int):
                 st.rerun()
 
             except Exception as error:
-                st.error("Could not update service.")
-                st.exception(error)
+                show_action_error(error)
 
 
 def render_provider_schedule():
@@ -375,8 +376,7 @@ def render_provider_schedule():
         services = fetch_provider_services(provider_id)
 
     except Exception as error:
-        st.error("Could not load your services.")
-        st.exception(error)
+        show_action_error(error)
         return
 
     if not services:
@@ -398,9 +398,8 @@ def render_provider_schedule():
 
     create_schedule_form(
         provider_id=provider_id,
-        selected_service_id=selected_service_id,
+        selected_service=selected_service,
     )
-
     st.markdown("---")
 
     provider_service_ids = [service.get("id") for service in services]
@@ -409,8 +408,7 @@ def render_provider_schedule():
         schedules = fetch_schedules_for_provider_services(provider_service_ids)
 
     except Exception as error:
-        st.error("Could not load schedule slots.")
-        st.exception(error)
+        show_action_error(error)
         return
 
     selected_service_schedules = [
@@ -429,8 +427,32 @@ def render_provider_schedule():
     )
 
 
-def create_schedule_form(provider_id: int, selected_service_id: int):
+def create_schedule_form(provider_id: int, selected_service: dict):
+    selected_service_id = selected_service.get("id")
+
+    raw_duration = (
+        selected_service.get("duration_minutes")
+        or selected_service.get("duration")
+        or 0
+    )
+
+    try:
+        duration_minutes = int(raw_duration)
+    except (TypeError, ValueError):
+        duration_minutes = 0
+
     with st.expander("➕ Create New Time Slot", expanded=True):
+        st.write(f"**Selected service:** {selected_service.get('title')}")
+        st.write(f"**Service duration:** {duration_minutes} minutes")
+
+        if not selected_service_id:
+            st.error("Selected service is invalid.")
+            return
+
+        if duration_minutes <= 0:
+            st.error("This service has no valid duration. Edit the service duration first.")
+            return
+
         with st.form("create_schedule_form"):
             slot_date = st.date_input("Date")
 
@@ -442,40 +464,46 @@ def create_schedule_form(provider_id: int, selected_service_id: int):
                     value=time(9, 0),
                 )
 
+            start_datetime_preview = datetime.combine(slot_date, start_time_value)
+            end_datetime_preview = start_datetime_preview + timedelta(
+                minutes=duration_minutes
+            )
+
             with col2:
-                end_time_value = st.time_input(
+                st.text_input(
                     "End Time",
-                    value=time(10, 0),
+                    value=end_datetime_preview.strftime("%H:%M"),
+                    disabled=True,
+                    help="End time is calculated automatically from service duration.",
                 )
 
             with col3:
                 is_active = st.checkbox("Active", value=True)
 
+            st.caption(
+                "The end time is calculated automatically because the backend requires "
+                "slot duration to exactly match service duration."
+            )
+
             submitted = st.form_submit_button("Create Time Slot")
 
-        if submitted:
-            start_datetime = datetime.combine(slot_date, start_time_value)
-            end_datetime = datetime.combine(slot_date, end_time_value)
+            if submitted:
+                start_datetime = datetime.combine(slot_date, start_time_value)
+                end_datetime = start_datetime + timedelta(minutes=duration_minutes)
 
-            if start_datetime >= end_datetime:
-                st.warning("Start time must be before end time.")
-                return
+                try:
+                    create_schedule_slot(
+                        service_id=selected_service_id,
+                        provider_id=provider_id,
+                        start_datetime=start_datetime,
+                        end_datetime=end_datetime,
+                        is_active=is_active,
+                    )
+                    st.success("Schedule slot created successfully.")
+                    st.rerun()
 
-            try:
-                create_schedule_slot(
-                    service_id=selected_service_id,
-                    provider_id=provider_id,
-                    start_datetime=start_datetime,
-                    end_datetime=end_datetime,
-                    is_active=is_active,
-                )
-
-                st.success("Schedule slot created successfully.")
-                st.rerun()
-
-            except Exception as error:
-                st.error("Could not create schedule slot.")
-                st.exception(error)
+                except Exception as error:
+                    show_action_error(error)
 
 
 def render_schedule_table(schedules: list[dict]):
@@ -525,20 +553,13 @@ def render_schedule_cards(
             col1, col2, col3 = st.columns(3)
 
             with col1:
-                st.write(
-                    f"**Date:** {start_datetime.date() if start_datetime else '-'}"
-                )
+                st.write(f"**Start:** {format_datetime(start_datetime)}")
 
             with col2:
-                st.write(
-                    f"**Start:** {start_datetime.strftime('%H:%M') if start_datetime else '-'}"
-                )
+                st.write(f"**End:** {format_datetime(end_datetime)}")
 
             with col3:
-                st.write(
-                    f"**End:** {end_datetime.strftime('%H:%M') if end_datetime else '-'}"
-                )
-
+                st.write(f"**Status:** {status_to_table_text(slot.get('status'))}")
             status_col1, status_col2, status_col3 = st.columns(3)
 
             with status_col1:
@@ -554,7 +575,7 @@ def render_schedule_cards(
                     st.info("Available")
 
             with status_col3:
-                st.caption(f"Status: {slot.get('status') or '-'}")
+                st.caption(f"Status: {status_to_table_text(slot.get('status'))}")
 
             action_col1, action_col2 = st.columns(2)
 
@@ -576,8 +597,7 @@ def render_schedule_cards(
                             st.rerun()
 
                         except Exception as error:
-                            st.error("Could not deactivate schedule slot.")
-                            st.exception(error)
+                            show_action_error(error)
                 else:
                     if st.button(
                         "Activate",
@@ -595,8 +615,7 @@ def render_schedule_cards(
                             st.rerun()
 
                         except Exception as error:
-                            st.error("Could not activate schedule slot.")
-                            st.exception(error)
+                            show_action_error(error)
 
             with action_col2:
                 confirm_delete = st.checkbox(
@@ -612,21 +631,18 @@ def render_schedule_cards(
                 ):
                     if slot.get("is_booked"):
                         st.warning("Booked slots should not be deleted.")
-                        return
+                    else:
+                        try:
+                            delete_schedule_slot(
+                                schedule_id=schedule_id,
+                                provider_service_ids=provider_service_ids,
+                            )
 
-                    try:
-                        delete_schedule_slot(
-                            schedule_id=schedule_id,
-                            provider_service_ids=provider_service_ids,
-                        )
+                            st.success("Schedule slot deleted.")
+                            st.rerun()
 
-                        st.success("Schedule slot deleted.")
-                        st.rerun()
-
-                    except Exception as error:
-                        st.error("Could not delete schedule slot.")
-                        st.exception(error)
-
+                        except Exception as error:
+                            show_action_error(error)
 
 def render_provider_bookings():
     page_title(
@@ -645,8 +661,7 @@ def render_provider_bookings():
         bookings = fetch_provider_bookings(provider_id)
 
     except Exception as error:
-        st.error("Could not load provider bookings.")
-        st.exception(error)
+        show_action_error(error)
         return
 
     if not bookings:
@@ -683,26 +698,26 @@ def render_provider_bookings_table(bookings: list[dict]):
     table_data = []
 
     for booking in bookings:
-        slot_start = booking.get("slot_start")
-        slot_end = booking.get("slot_end")
-
         table_data.append(
             {
                 "Booking ID": booking.get("id"),
                 "Customer": booking.get("customer_name"),
                 "Service": booking.get("service_title"),
-                "Date": slot_start.date() if slot_start else "-",
-                "Time": (
-                    f"{slot_start.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}"
-                    if slot_start and slot_end
-                    else "-"
-                ),
-                "Status": booking.get("status") or "-",
-                "Payment": booking.get("payment_status") or "-",
+                "Start": format_datetime(booking.get("slot_start")),
+                "End": format_datetime(booking.get("slot_end")),
+                "Status": status_to_table_text(booking.get("status")),
+                "Payment": status_to_table_text(booking.get("payment_status")),
                 "Slot ID": booking.get("schedule_id") or "-",
             }
         )
 
+    df = pd.DataFrame(table_data)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
     df = pd.DataFrame(table_data)
 
     st.dataframe(
@@ -731,20 +746,12 @@ def render_provider_booking_cards(bookings: list[dict]):
                 st.write(f"**Service:** {booking.get('service_title')}")
 
             with col2:
-                st.write(
-                    f"**Date:** {slot_start.date() if slot_start else '-'}"
-                )
-                st.write(
-                    f"**Time:** "
-                    f"{slot_start.strftime('%H:%M') if slot_start else '-'}"
-                    f" - "
-                    f"{slot_end.strftime('%H:%M') if slot_end else '-'}"
-                )
-                st.write(f"**Price:** {booking.get('service_price') or '-'}")
+                st.write(f"**Start:** {format_datetime(slot_start)}")
+                st.write(f"**End:** {format_datetime(slot_end)}")
 
             with col3:
-                st.write(f"**Status:** {booking.get('status') or '-'}")
-                st.write(f"**Payment:** {booking.get('payment_status') or '-'}")
+                st.write(f"**Status:** {status_to_table_text(booking.get('status'))}")
+                st.write(f"**Payment:** {status_to_table_text(booking.get('payment_status'))}")
                 st.write(f"**Slot ID:** {booking.get('schedule_id') or '-'}")
 
             action_col1, action_col2, action_col3 = st.columns(3)
@@ -769,8 +776,7 @@ def render_provider_booking_cards(bookings: list[dict]):
                         st.rerun()
 
                     except Exception as error:
-                        st.error("Could not approve booking.")
-                        st.exception(error)
+                        show_action_error(error)
 
             with action_col2:
                 confirm_reject = st.checkbox(
@@ -801,8 +807,7 @@ def render_provider_booking_cards(bookings: list[dict]):
                         st.rerun()
 
                     except Exception as error:
-                        st.error("Could not reject booking.")
-                        st.exception(error)
+                        show_action_error(error)
 
             with action_col3:
                 confirm_cancel = st.checkbox(
@@ -833,8 +838,7 @@ def render_provider_booking_cards(bookings: list[dict]):
                         st.rerun()
 
                     except Exception as error:
-                        st.error("Could not cancel booking.")
-                        st.exception(error)
+                        show_action_error(error)
 
 
 def render_provider_reviews():

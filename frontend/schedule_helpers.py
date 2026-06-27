@@ -1,286 +1,80 @@
-from datetime import date, datetime, time
-from typing import Any
+from datetime import datetime
 
-from sqlalchemy import Date, DateTime, Time
-
-from app.db import get_session
-import app.models as models
-
-
-def get_schedule_model():
-    possible_names = [
-        "Schedule",
-        "TimeSlot",
-        "Slot",
-        "ScheduleSlot",
-    ]
-
-    for name in possible_names:
-        if hasattr(models, name):
-            return getattr(models, name)
-
-    raise ImportError(
-        "No schedule model found. Expected one of: Schedule, TimeSlot, Slot, ScheduleSlot."
-    )
+from app.exceptions import NotFoundError, PermissionDeniedError
+from app.models import SlotStatusEnum, TimeSlot
+from app.services.schedule_service import ScheduleService
+from frontend.db_actions import enum_value, get_actor, run_db_action
 
 
-def get_model_columns(model_class) -> set[str]:
-    return {column.name for column in model_class.__table__.columns}
+def normalize_slot_status(status_value) -> str:
+    raw = enum_value(status_value)
+
+    if raw is None:
+        return "ACTIVE"
+
+    raw = str(raw).split(".")[-1].strip().upper()
+
+    if raw in {"ACTIVE", "TRUE", "1"}:
+        return "ACTIVE"
+
+    if raw in {"INACTIVE", "FALSE", "0"}:
+        return "INACTIVE"
+
+    return raw
 
 
-def get_column(model_class, column_name: str):
-    return model_class.__table__.columns.get(column_name)
+def slot_is_active(slot: dict) -> bool:
+    return normalize_slot_status(slot.get("status")) == "ACTIVE"
 
 
-def get_first_attr(obj: Any, names: list[str], default=None):
-    for name in names:
-        if hasattr(obj, name):
-            value = getattr(obj, name)
-            if value is not None:
-                return value
-
-    return default
-
-
-def get_first_existing_column(columns: set[str], possible_names: list[str]) -> str | None:
-    for name in possible_names:
-        if name in columns:
-            return name
-
-    return None
-
-
-def normalize_datetime(value, fallback_date: date | None = None):
-    if value is None:
-        return None
-
-    if isinstance(value, datetime):
-        return value
-
-    if isinstance(value, time):
-        if fallback_date is None:
-            fallback_date = date.today()
-        return datetime.combine(fallback_date, value)
-
-    if isinstance(value, date):
-        return datetime.combine(value, time.min)
-
-    return value
-
-
-def schedule_to_dict(schedule) -> dict:
-    schedule_model = type(schedule)
-    columns = get_model_columns(schedule_model)
-
-    slot_date = get_first_attr(
-        schedule,
-        ["date", "slot_date", "schedule_date", "day"],
-        None,
-    )
-
-    raw_start = get_first_attr(
-        schedule,
-        ["start_time", "start_datetime", "starts_at", "start"],
-        None,
-    )
-
-    raw_end = get_first_attr(
-        schedule,
-        ["end_time", "end_datetime", "ends_at", "end"],
-        None,
-    )
-
-    start_datetime = normalize_datetime(raw_start, fallback_date=slot_date)
-    end_datetime = normalize_datetime(raw_end, fallback_date=slot_date)
-
-    service_id = get_first_attr(schedule, ["service_id"], None)
-
-    provider_id = get_first_attr(schedule, ["provider_id"], None)
-
-    is_active = get_first_attr(
-        schedule,
-        ["is_active", "active"],
-        True,
-    )
-
-    is_booked = get_first_attr(
-        schedule,
-        ["is_booked", "booked"],
-        False,
-    )
-
-    status = get_first_attr(
-        schedule,
-        ["status"],
-        None,
-    )
+def slot_to_dict(slot: TimeSlot) -> dict:
+    status = normalize_slot_status(slot.status)
 
     return {
-        "id": get_first_attr(schedule, ["id"], None),
-        "service_id": service_id,
-        "provider_id": provider_id,
-        "start_datetime": start_datetime,
-        "end_datetime": end_datetime,
-        "date": slot_date or (start_datetime.date() if start_datetime else None),
-        "start_time": start_datetime.time() if isinstance(start_datetime, datetime) else None,
-        "end_time": end_datetime.time() if isinstance(end_datetime, datetime) else None,
-        "is_active": bool(is_active),
-        "is_booked": bool(is_booked),
+        "id": slot.id,
+        "service_id": slot.service_id,
+        "start_datetime": slot.start_time,
+        "end_datetime": slot.end_time,
+        "start_time": slot.start_time,
+        "end_time": slot.end_time,
         "status": status,
-        "raw_columns": columns,
+        "is_active": status == "ACTIVE",
+        "is_booked": slot.booking is not None,
     }
 
 
-def set_datetime_field(
-    data: dict,
-    model_class,
-    columns: set[str],
-    possible_names: list[str],
-    value: datetime,
-):
-    column_name = get_first_existing_column(columns, possible_names)
+def fetch_available_schedules_for_service(service_id: int) -> list[dict]:
+    """
+    Customer free slots.
+    Uses ScheduleService.list_free_slots().
+    """
+    def action(session):
+        slots = ScheduleService(session).list_free_slots(service_id)
+        return [slot_to_dict(slot) for slot in slots]
 
-    if column_name is None:
-        return
-
-    column = get_column(model_class, column_name)
-
-    if isinstance(column.type, Time):
-        data[column_name] = value.time()
-    elif isinstance(column.type, Date) and not isinstance(column.type, DateTime):
-        data[column_name] = value.date()
-    else:
-        data[column_name] = value
+    return run_db_action(action)
 
 
-def build_schedule_data(
-    service_id: int,
-    provider_id: int,
-    start_datetime: datetime,
-    end_datetime: datetime,
-    is_active: bool,
-) -> dict:
-    ScheduleModel = get_schedule_model()
-    columns = get_model_columns(ScheduleModel)
+def fetch_schedules_for_provider_services(
+    provider_service_ids: list[int],
+) -> list[dict]:
+    """
+    Provider slot list.
+    Uses ScheduleService.list_slots() for each provider service.
+    """
+    def action(session):
+        schedule_service = ScheduleService(session)
+        all_slots = []
 
-    data = {}
+        for service_id in provider_service_ids:
+            if service_id is None:
+                continue
 
-    if "service_id" in columns:
-        data["service_id"] = service_id
+            all_slots.extend(schedule_service.list_slots(service_id))
 
-    if "provider_id" in columns:
-        data["provider_id"] = provider_id
+        return [slot_to_dict(slot) for slot in all_slots]
 
-    date_field = get_first_existing_column(
-        columns,
-        ["date", "slot_date", "schedule_date", "day"],
-    )
-
-    if date_field:
-        data[date_field] = start_datetime.date()
-
-    set_datetime_field(
-        data,
-        ScheduleModel,
-        columns,
-        ["start_time", "start_datetime", "starts_at", "start"],
-        start_datetime,
-    )
-
-    set_datetime_field(
-        data,
-        ScheduleModel,
-        columns,
-        ["end_time", "end_datetime", "ends_at", "end"],
-        end_datetime,
-    )
-
-    if "is_active" in columns:
-        data["is_active"] = is_active
-    elif "active" in columns:
-        data["active"] = is_active
-
-    if "is_booked" in columns:
-        data["is_booked"] = False
-    elif "booked" in columns:
-        data["booked"] = False
-
-    if "status" in columns:
-        data["status"] = "ACTIVE" if is_active else "INACTIVE"
-
-    return data
-
-
-def fetch_schedules_for_service(service_id: int) -> list[dict]:
-    ScheduleModel = get_schedule_model()
-
-    with get_session() as session:
-        if hasattr(ScheduleModel, "service_id"):
-            schedules = (
-                session.query(ScheduleModel)
-                .filter(ScheduleModel.service_id == service_id)
-                .all()
-            )
-        else:
-            schedules = session.query(ScheduleModel).all()
-
-        return [schedule_to_dict(schedule) for schedule in schedules]
-
-
-def fetch_schedules_for_provider_services(service_ids: list[int]) -> list[dict]:
-    ScheduleModel = get_schedule_model()
-
-    if not service_ids:
-        return []
-
-    with get_session() as session:
-        if hasattr(ScheduleModel, "service_id"):
-            schedules = (
-                session.query(ScheduleModel)
-                .filter(ScheduleModel.service_id.in_(service_ids))
-                .all()
-            )
-        else:
-            schedules = session.query(ScheduleModel).all()
-
-        return [schedule_to_dict(schedule) for schedule in schedules]
-
-
-def slots_overlap(
-    first_start: datetime,
-    first_end: datetime,
-    second_start: datetime,
-    second_end: datetime,
-) -> bool:
-    return first_start < second_end and first_end > second_start
-
-
-def validate_no_overlap(
-    service_id: int,
-    start_datetime: datetime,
-    end_datetime: datetime,
-):
-    existing_slots = fetch_schedules_for_service(service_id)
-
-    for slot in existing_slots:
-        existing_start = slot.get("start_datetime")
-        existing_end = slot.get("end_datetime")
-
-        if not existing_start or not existing_end:
-            continue
-
-        if not slot.get("is_active", True):
-            continue
-
-        if slots_overlap(
-            start_datetime,
-            end_datetime,
-            existing_start,
-            existing_end,
-        ):
-            raise ValueError(
-                "This time slot overlaps with an existing active slot for this service."
-            )
+    return run_db_action(action)
 
 
 def create_schedule_slot(
@@ -290,33 +84,36 @@ def create_schedule_slot(
     end_datetime: datetime,
     is_active: bool = True,
 ):
-    if start_datetime >= end_datetime:
-        raise ValueError("Start time must be before end time.")
+    def action(session):
+        actor = get_actor(session, provider_id)
 
-    validate_no_overlap(
-        service_id=service_id,
-        start_datetime=start_datetime,
-        end_datetime=end_datetime,
-    )
-
-    ScheduleModel = get_schedule_model()
-
-    with get_session() as session:
-        schedule_data = build_schedule_data(
+        slot = ScheduleService(session).create_slot(
+            actor=actor,
             service_id=service_id,
-            provider_id=provider_id,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            is_active=is_active,
+            start_time=start_datetime,
+            end_time=end_datetime,
+            status=SlotStatusEnum.ACTIVE if is_active else SlotStatusEnum.INACTIVE,
         )
 
-        schedule = ScheduleModel(**schedule_data)
+        return slot_to_dict(slot)
 
-        session.add(schedule)
-        session.commit()
-        session.refresh(schedule)
+    return run_db_action(action)
 
-        return schedule_to_dict(schedule)
+
+def get_slot_and_validate_provider_services(
+    session,
+    schedule_id: int,
+    provider_service_ids: list[int],
+) -> TimeSlot:
+    slot = session.get(TimeSlot, schedule_id)
+
+    if slot is None:
+        raise NotFoundError("Time slot not found.")
+
+    if slot.service_id not in provider_service_ids:
+        raise PermissionDeniedError("You cannot manage another provider's slot.")
+
+    return slot
 
 
 def set_schedule_active_status(
@@ -324,76 +121,50 @@ def set_schedule_active_status(
     provider_service_ids: list[int],
     is_active: bool,
 ):
-    ScheduleModel = get_schedule_model()
-
-    with get_session() as session:
-        schedule = session.get(ScheduleModel, schedule_id)
-
-        if schedule is None:
-            raise ValueError("Schedule slot not found.")
-
-        schedule_service_id = getattr(schedule, "service_id", None)
-
-        if schedule_service_id not in provider_service_ids:
-            raise PermissionError("You cannot update another provider's schedule slot.")
-
-        if hasattr(schedule, "is_active"):
-            schedule.is_active = is_active
-        elif hasattr(schedule, "active"):
-            schedule.active = is_active
-        else:
-            raise ValueError("This schedule model has no active status field.")
-
-        session.commit()
-        session.refresh(schedule)
-
-        return schedule_to_dict(schedule)
-
-
-def delete_schedule_slot(schedule_id: int, provider_service_ids: list[int]):
-    ScheduleModel = get_schedule_model()
-
-    with get_session() as session:
-        schedule = session.get(ScheduleModel, schedule_id)
-
-        if schedule is None:
-            raise ValueError("Schedule slot not found.")
-
-        schedule_service_id = getattr(schedule, "service_id", None)
-
-        if schedule_service_id not in provider_service_ids:
-            raise PermissionError("You cannot delete another provider's schedule slot.")
-
-        session.delete(schedule)
-        session.commit()
-
-
-
-def fetch_available_schedules_for_service(service_id: int) -> list[dict]:
     """
-    Fetch only active and unbooked slots for one service.
-    Used by the customer service detail page.
+    Kept same signature so provider_ui.py does not need a large rewrite.
+    Internally it uses ScheduleService.toggle_slot_status().
     """
-    schedules = fetch_schedules_for_service(service_id)
+    def action(session):
+        slot = get_slot_and_validate_provider_services(
+            session=session,
+            schedule_id=schedule_id,
+            provider_service_ids=provider_service_ids,
+        )
 
-    available_slots = []
+        actor = slot.service.provider
 
-    for slot in schedules:
-        if not slot.get("is_active", False):
-            continue
+        updated_slot = ScheduleService(session).toggle_slot_status(
+            actor=actor,
+            slot_id=schedule_id,
+            active=is_active,
+        )
 
-        if slot.get("is_booked", False):
-            continue
+        return slot_to_dict(updated_slot)
 
-        status = slot.get("status")
+    return run_db_action(action)
 
-        if status is not None and status != "ACTIVE":
-            continue
 
-        available_slots.append(slot)
+def delete_schedule_slot(
+    schedule_id: int,
+    provider_service_ids: list[int],
+):
+    """
+    Kept same signature so provider_ui.py does not need a large rewrite.
+    Internally it uses ScheduleService.delete_slot().
+    """
+    def action(session):
+        slot = get_slot_and_validate_provider_services(
+            session=session,
+            schedule_id=schedule_id,
+            provider_service_ids=provider_service_ids,
+        )
 
-    available_slots.sort(
-        key=lambda slot: slot.get("start_datetime")
-    )
+        actor = slot.service.provider
 
-    return available_slots
+        ScheduleService(session).delete_slot(
+            actor=actor,
+            slot_id=schedule_id,
+        )
+
+    return run_db_action(action)

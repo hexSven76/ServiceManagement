@@ -1,8 +1,8 @@
 from typing import Any
 
-from app.db import get_session
-from app.models import Service, ServiceStatusEnum
+from app.models import ServiceStatusEnum
 from app.services.service_service import ServiceService
+from frontend.db_actions import enum_value, get_actor, run_db_action
 
 
 def get_first_attr(obj: Any, names: list[str], default=None):
@@ -15,19 +15,12 @@ def get_first_attr(obj: Any, names: list[str], default=None):
 
 
 def normalize_service_status(status_value) -> str:
-    """
-    Convert backend enum/string status into a stable frontend string.
-    Output is always 'ACTIVE' or 'INACTIVE' when possible.
-    """
-    if status_value is None:
+    raw = enum_value(status_value)
+
+    if raw is None:
         return "ACTIVE"
 
-    if hasattr(status_value, "value"):
-        raw = str(status_value.value)
-    else:
-        raw = str(status_value)
-
-    raw = raw.split(".")[-1].strip().upper()
+    raw = str(raw).split(".")[-1].strip().upper()
 
     if raw in {"ACTIVE", "TRUE", "1"}:
         return "ACTIVE"
@@ -49,57 +42,65 @@ def service_to_dict(service) -> dict:
     if provider is not None:
         provider_name = get_first_attr(
             provider,
-            ["username", "full_name", "email"],
+            ["username", "email"],
             None,
         )
 
-    raw_status = get_first_attr(
-        service,
-        ["status"],
-        ServiceStatusEnum.ACTIVE,
+        profile = get_first_attr(provider, ["profile"], None)
+        if profile is not None:
+            provider_name = (
+                get_first_attr(profile, ["full_name"], None)
+                or provider_name
+            )
+
+    status = normalize_service_status(
+        get_first_attr(service, ["status"], ServiceStatusEnum.ACTIVE)
     )
-    status = normalize_service_status(raw_status)
 
     return {
         "id": get_first_attr(service, ["id"]),
-        "title": get_first_attr(
-            service,
-            ["title", "name", "service_name"],
-            "Untitled Service",
-        ),
+        "title": get_first_attr(service, ["title"], "Untitled Service"),
         "description": get_first_attr(service, ["description"], ""),
         "category": get_first_attr(service, ["category"], "Uncategorized"),
-        "price": get_first_attr(service, ["price"], 0),
-        "duration": get_first_attr(
-            service,
-            ["duration_minutes", "duration", "duration_time"],
-            "-",
-        ),
+        "price": float(get_first_attr(service, ["price"], 0) or 0),
+        "duration": get_first_attr(service, ["duration_minutes"], "-"),
+        "duration_minutes": get_first_attr(service, ["duration_minutes"], None),
         "status": status,
-        # Compatibility field for old UI code.
-        # This is derived from the real backend status, not from a DB column.
-        "is_active": status == "ACTIVE",
-        "image_path": get_first_attr(service, ["image_path", "image"], None),
+        "is_active": status == "ACTIVE",  # compatibility for older UI code
+        "image_path": get_first_attr(service, ["image_path"], None),
         "provider_id": get_first_attr(service, ["provider_id"], None),
         "provider_name": provider_name
         or f"Provider #{get_first_attr(service, ['provider_id'], '-')}",
     }
 
 
-def fetch_all_services() -> list[dict]:
+def fetch_all_services(
+    actor_id: int | None = None,
+    only_active: bool = False,
+) -> list[dict]:
     """
-    Fetch services from backend and convert ORM objects to plain dictionaries
-    inside the DB session.
+    Fetch services through ServiceService.
     """
-    with get_session() as session:
-        service_service = ServiceService(session)
-
-        try:
-            services = service_service.list_services()
-        except TypeError:
-            services = session.query(Service).all()
-
+    def action(session):
+        actor = get_actor(session, actor_id) if actor_id else None
+        services = ServiceService(session).list_services(
+            actor=actor,
+            only_active=only_active,
+        )
         return [service_to_dict(service) for service in services]
+
+    return run_db_action(action)
+
+
+def fetch_service_by_id(service_id: int) -> dict:
+    """
+    Fetch one service through ServiceService.
+    """
+    def action(session):
+        service = ServiceService(session).get_service(service_id)
+        return service_to_dict(service)
+
+    return run_db_action(action)
 
 
 def filter_services(
@@ -111,6 +112,10 @@ def filter_services(
     max_price: float | int | None = None,
     active_only: bool = True,
 ) -> list[dict]:
+    """
+    Keep this frontend-side because Streamlit dynamic filters rerun immediately.
+    Backend listing is still handled by ServiceService.
+    """
     search_text = search_text.strip().lower()
     filtered = []
 
