@@ -1,87 +1,57 @@
-from __future__ import annotations
 from datetime import datetime, timedelta
-from sqlalchemy import func, select
-from ..exceptions import PermissionDeniedError
-from ..models import Booking, BookingStatusEnum, RoleEnum, Service, ServiceStatusEnum, User
-from .base import BaseService
+from sqlalchemy import func
+
+from app.models import Booking, Payment, RoleEnum, Service, ServiceStatusEnum, User
+from app.services.base import BaseService
 
 
 class DashboardService(BaseService):
-    def admin_stats(self, actor: User) -> dict:
-        if actor.role != RoleEnum.ADMIN:
-            raise PermissionDeniedError("Only admin can view this dashboard.")
-
-        total_users = self.session.execute(select(func.count(User.id))).scalar_one()
-        provider_users = self.session.execute(select(func.count(User.id)).where(User.role == RoleEnum.PROVIDER)).scalar_one()
-        customer_users = self.session.execute(select(func.count(User.id)).where(User.role == RoleEnum.CUSTOMER)).scalar_one()
-        admin_users = self.session.execute(select(func.count(User.id)).where(User.role == RoleEnum.ADMIN)).scalar_one()
-
-        total_services = self.session.execute(select(func.count(Service.id))).scalar_one()
-        active_services = self.session.execute(select(func.count(Service.id)).where(Service.status == ServiceStatusEnum.ACTIVE)).scalar_one()
-        inactive_services = self.session.execute(select(func.count(Service.id)).where(Service.status == ServiceStatusEnum.INACTIVE)).scalar_one()
-
-        total_bookings = self.session.execute(select(func.count(Booking.id))).scalar_one()
-        bookings_today = self.session.execute(
-            select(func.count(Booking.id)).where(Booking.created_at >= datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0))
-        ).scalar_one()
-        bookings_week = self.session.execute(
-            select(func.count(Booking.id)).where(Booking.created_at >= datetime.utcnow() - timedelta(days=7))
-        ).scalar_one()
-
-        top_services = self.session.execute(
-            select(Service.title, func.count(Booking.id).label("cnt"))
-            .join(Booking, Booking.service_id == Service.id)
+    def admin_stats(self) -> dict:
+        now = datetime.utcnow()
+        today_start = datetime(now.year, now.month, now.day)
+        week_start = now - timedelta(days=7)
+        users_by_role = {
+            role.value: self.session.query(User).filter(User.role == role).count()
+            for role in RoleEnum
+        }
+        services_by_status = {
+            status.value: self.session.query(Service).filter(Service.status == status).count()
+            for status in ServiceStatusEnum
+        }
+        top_services_rows = (
+            self.session.query(Service.title, func.count(Booking.id).label("booking_count"))
+            .join(Booking, Booking.service_id == Service.id, isouter=True)
             .group_by(Service.id)
             .order_by(func.count(Booking.id).desc())
-            .limit(5)
-        ).all()
-
-        income = self.session.execute(
-            select(func.coalesce(func.sum(Service.price), 0))
-            .select_from(Booking)
-            .join(Service, Booking.service_id == Service.id)
-            .where(Booking.status == BookingStatusEnum.CONFIRMED)
-        ).scalar_one()
-
+            .limit(10)
+            .all()
+        )
         return {
-            "total_users": int(total_users),
-            "users_by_role": {
-                "ADMIN": int(admin_users),
-                "PROVIDER": int(provider_users),
-                "CUSTOMER": int(customer_users),
-            },
-            "total_services": int(total_services),
-            "active_services": int(active_services),
-            "inactive_services": int(inactive_services),
-            "total_bookings": int(total_bookings),
-            "bookings_today": int(bookings_today),
-            "bookings_week": int(bookings_week),
-            "top_services": [{"title": title, "count": int(cnt)} for title, cnt in top_services],
-            "fake_income": float(income or 0),
+            "total_users": self.session.query(User).count(),
+            "total_bookings": self.session.query(Booking).count(),
+            "today_bookings": self.session.query(Booking).filter(Booking.created_at >= today_start).count(),
+            "week_bookings": self.session.query(Booking).filter(Booking.created_at >= week_start).count(),
+            "total_services": self.session.query(Service).count(),
+            "fake_income": float(self.session.query(func.coalesce(func.sum(Payment.amount), 0)).scalar() or 0),
+            "users_by_role": users_by_role,
+            "services_by_status": services_by_status,
+            "top_services": [{"service": r.title, "bookings": int(r.booking_count)} for r in top_services_rows],
         }
 
-    def provider_stats(self, actor: User) -> dict:
-        if actor.role != RoleEnum.PROVIDER:
-            raise PermissionDeniedError("Only provider can view this dashboard.")
-
-        total_services = self.session.execute(select(func.count(Service.id)).where(Service.provider_id == actor.id)).scalar_one()
-        total_bookings = self.session.execute(select(func.count(Booking.id)).where(Booking.provider_id == actor.id)).scalar_one()
-        status_counts = {
-            status.value: int(self.session.execute(
-                select(func.count(Booking.id)).where(Booking.provider_id == actor.id, Booking.status == status)
-            ).scalar_one())
-            for status in BookingStatusEnum
-        }
-        income = self.session.execute(
-            select(func.coalesce(func.sum(Service.price), 0))
-            .select_from(Booking)
-            .join(Service, Booking.service_id == Service.id)
-            .where(Booking.provider_id == actor.id, Booking.status == BookingStatusEnum.CONFIRMED)
-        ).scalar_one()
-
+    def provider_stats(self, provider_id: int) -> dict:
+        bookings = self.session.query(Booking).filter(Booking.provider_id == provider_id).all()
+        status_counts = {}
+        for booking in bookings:
+            status_counts[booking.status.value] = status_counts.get(booking.status.value, 0) + 1
+        income = (
+            self.session.query(func.coalesce(func.sum(Payment.amount), 0))
+            .join(Booking, Payment.booking_id == Booking.id)
+            .filter(Booking.provider_id == provider_id)
+            .scalar()
+        )
         return {
-            "total_services": int(total_services),
-            "total_bookings": int(total_bookings),
+            "total_services": self.session.query(Service).filter(Service.provider_id == provider_id).count(),
+            "total_bookings": len(bookings),
             "booking_status_counts": status_counts,
             "fake_income": float(income or 0),
         }

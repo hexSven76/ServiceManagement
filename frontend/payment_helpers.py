@@ -1,9 +1,7 @@
 from typing import Any
-from pathlib import Path
 
 from app.services.payment_service import PaymentService
 from frontend.db_actions import enum_value, get_actor, run_db_action
-from app.services.report_service import ReportService
 
 
 def get_first_attr(obj: Any, names: list[str], default=None):
@@ -76,39 +74,5 @@ def fetch_booking_payment(booking_id: int) -> dict | None:
             return None
 
         return payment_to_dict(payment)
-
-    return run_db_action(action)
-
-
-def generate_customer_receipt_pdf(
-    customer_id: int,
-    booking_id: int,
-) -> dict:
-    """
-    Generate receipt PDF for a paid customer booking.
-
-    Returns:
-    {
-        "filename": "...",
-        "bytes": b"..."
-    }
-    """
-    def action(session):
-        actor = get_actor(session, customer_id)
-
-        receipt_path = ReportService(session).receipt_pdf(
-            actor=actor,
-            booking_id=booking_id,
-        )
-
-        path = Path(receipt_path)
-
-        if not path.exists():
-            raise FileNotFoundError(f"Receipt PDF was not generated: {receipt_path}")
-
-        return {
-            "filename": path.name,
-            "bytes": path.read_bytes(),
-        }
 
     return run_db_action(action)

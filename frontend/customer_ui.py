@@ -28,15 +28,19 @@ from frontend.ui_helpers import (
     status_to_table_text,
 )
 from frontend.customer_review_helpers import (
+    create_customer_review,
     enrich_services_with_review_summary,
+    fetch_customer_reviews,
+    fetch_review_for_booking,
     fetch_service_review_summary,
     format_rating,
 )
 from frontend.payment_helpers import (
     fetch_booking_payment,
-    generate_customer_receipt_pdf,
     pay_customer_booking,
 )
+from frontend.profile_helpers import fetch_my_profile, update_my_profile
+from frontend.report_helpers import customer_bookings_pdf_bytes, receipt_pdf_bytes
 
 
 
@@ -1145,60 +1149,206 @@ def render_paid_booking_summary(booking: dict):
     if payment.get("payment_reference"):
         st.caption(f"Reference: {payment.get('payment_reference')}")
 
+    receipt_state_key = f"receipt_pdf_bytes_{booking_id}"
+
+    if st.button(
+        "Prepare Receipt PDF",
+        key=f"prepare_receipt_{booking_id}",
+        use_container_width=True,
+    ):
+        try:
+            st.session_state[receipt_state_key] = receipt_pdf_bytes(booking_id)
+            st.success("Receipt PDF is ready.")
+        except Exception as error:
+            st.caption(f"Receipt is not available yet: {error}")
+
+    if st.session_state.get(receipt_state_key):
+        st.download_button(
+            "Download Receipt PDF",
+            data=st.session_state[receipt_state_key],
+            file_name=f"receipt_booking_{booking_id}.pdf",
+            mime="application/octet-stream",
+            key=f"download_receipt_{booking_id}",
+            use_container_width=True,
+        )
+
 
 def render_customer_review_action_placeholder(booking: dict):
     booking_id = booking.get("id")
 
-    if can_customer_review_booking(booking):
+    try:
+        existing_review = fetch_review_for_booking(booking_id)
+    except Exception as error:
+        show_action_error(error)
+        return
+
+    if existing_review:
         st.button(
-            "Review",
-            key=f"review_booking_placeholder_{booking_id}",
+            "Reviewed",
+            key=f"reviewed_booking_{booking_id}",
             use_container_width=True,
             disabled=True,
         )
-        st.caption("Reviews will be added in CUS-NEXT-07.")
+        st.caption(
+            f"Your rating: {existing_review.get('rating')}/5 — "
+            f"{existing_review.get('comment') or 'No comment'}"
+        )
         return
 
-    st.button(
-        "Review",
-        key=f"disabled_review_booking_{booking_id}",
-        use_container_width=True,
-        disabled=True,
-    )
-    st.caption("Review is not available for this booking state.")
+    if not can_customer_review_booking(booking):
+        st.button(
+            "Review",
+            key=f"disabled_review_booking_{booking_id}",
+            use_container_width=True,
+            disabled=True,
+        )
+        st.caption("Review is available after provider confirmation.")
+        return
+
+    with st.expander("Review", expanded=False):
+        rating = st.slider(
+            "Rating",
+            min_value=1,
+            max_value=5,
+            value=5,
+            key=f"review_rating_{booking_id}",
+        )
+        comment = st.text_area(
+            "Comment",
+            key=f"review_comment_{booking_id}",
+            placeholder="Optional feedback for this service...",
+        )
+        confirm_review = st.checkbox(
+            "Submit this review",
+            key=f"confirm_review_{booking_id}",
+        )
+        if st.button(
+            "Submit Review",
+            key=f"submit_review_{booking_id}",
+            use_container_width=True,
+            disabled=not confirm_review,
+        ):
+            try:
+                create_customer_review(
+                    customer_id=st.session_state.user_id,
+                    booking_id=booking_id,
+                    rating=rating,
+                    comment=comment.strip() or None,
+                )
+                st.session_state.customer_booking_message = (
+                    f"Review for booking #{booking_id} submitted successfully."
+                )
+                st.rerun()
+            except Exception as error:
+                show_action_error(error)
 
 
 def render_customer_profile():
     page_title(
         "Customer Profile",
-        "Customer can edit profile and contact information.",
+        "View and update your contact information.",
     )
 
-    placeholder_page(
-        "Profile form",
-        "Later, this page will connect to UserService.",
-    )
+    try:
+        profile = fetch_my_profile(st.session_state.user_id)
+    except Exception as error:
+        show_action_error(error)
+        return
+
+    with st.form("customer_profile_form"):
+        st.text_input("Username", value=profile.get("username") or "", disabled=True)
+        st.text_input("Email", value=profile.get("email") or "", disabled=True)
+        full_name = st.text_input("Full Name", value=profile.get("full_name") or "")
+        phone = st.text_input("Phone", value=profile.get("phone") or "")
+        bio = st.text_area("Bio", value=profile.get("bio") or "")
+        submitted = st.form_submit_button("Save Profile")
+
+    if submitted:
+        try:
+            update_my_profile(st.session_state.user_id, full_name, phone, bio)
+            st.success("Profile updated successfully.")
+            st.rerun()
+        except Exception as error:
+            show_action_error(error)
 
 
 def render_customer_reviews():
     page_title(
         "My Reviews",
-        "Customer can submit and view service reviews.",
+        "View reviews you have submitted.",
     )
 
-    placeholder_page(
-        "Customer reviews",
-        "Later, this page will connect to ReviewService.",
-    )
+    try:
+        reviews = fetch_customer_reviews(st.session_state.user_id)
+    except Exception as error:
+        show_action_error(error)
+        return
+
+    if not reviews:
+        st.info("You have not submitted any reviews yet.")
+        return
+
+    table_data = [
+        {
+            "Review ID": review.get("id"),
+            "Booking ID": review.get("booking_id"),
+            "Service": review.get("service_title"),
+            "Provider": review.get("provider_name"),
+            "Rating": review.get("rating"),
+            "Comment": review.get("comment") or "-",
+            "Created": review.get("created_at_text"),
+        }
+        for review in reviews
+    ]
+    st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
 
 def render_customer_payments():
     page_title(
         "Payments",
-        "Customer can pay for bookings and download payment receipts.",
+        "Review paid bookings and download receipts.",
     )
 
-    placeholder_page(
-        "Payment page",
-        "Later, this page will connect to PaymentService and ReportService.",
-    )
+    try:
+        bookings = fetch_customer_bookings(st.session_state.user_id)
+    except Exception as error:
+        show_action_error(error)
+        return
+
+    paid_bookings = [booking for booking in bookings if get_payment_status_upper(booking) == "PAID"]
+
+    if not paid_bookings:
+        st.info("You do not have any paid bookings yet.")
+        return
+
+    all_bookings_pdf_key = f"customer_all_bookings_pdf_{st.session_state.user_id}"
+
+    if st.button(
+        "Prepare All My Bookings PDF",
+        key="prepare_customer_all_bookings_pdf",
+        use_container_width=True,
+    ):
+        try:
+            st.session_state[all_bookings_pdf_key] = customer_bookings_pdf_bytes(
+                st.session_state.user_id
+            )
+            st.success("Bookings PDF is ready.")
+        except Exception as error:
+            show_action_error(error)
+
+    if st.session_state.get(all_bookings_pdf_key):
+        st.download_button(
+            "Download All My Bookings PDF",
+            data=st.session_state[all_bookings_pdf_key],
+            file_name=f"customer_{st.session_state.user_id}_bookings.pdf",
+            mime="application/octet-stream",
+            key="download_customer_all_bookings_pdf",
+            use_container_width=True,
+        )
+
+    for booking in paid_bookings:
+        with st.container(border=True):
+            st.markdown(f"### Booking #{booking.get('id')}")
+            st.write(f"**Service:** {booking.get('service_title')}")
+            st.write(f"**Provider:** {booking.get('provider_name')}")
+            render_paid_booking_summary(booking)

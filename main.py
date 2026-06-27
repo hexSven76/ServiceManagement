@@ -1,25 +1,14 @@
-from __future__ import annotations
-from app.db import init_db, get_session
-from app.models import RoleEnum
-from app.services import AuthService
-from sqlalchemy import select, func
-from app.models import User
+from app.db import get_session, init_db
+from app.seed import seed_demo_data
+
 
 def main():
     init_db()
     with get_session() as session:
-        auth = AuthService(session)
-        # Creating default admin if none exists
-        exists = session.execute(select(func.count(User.id))).scalar_one()
-        if exists == 0:
-            auth.register(
-                username="admin",
-                email="admin@example.com",
-                password="admin123",
-                role=RoleEnum.ADMIN,
-                full_name="System Admin",
-            )
+        seed_demo_data(session)
+    print("Database is ready at data/service_booking.db")
+    print("Demo accounts: admin/admin123, provider/provider123, customer/customer123")
+
 
 if __name__ == "__main__":
     main()
-    print("Database initialized.")

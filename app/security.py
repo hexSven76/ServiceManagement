@@ -1,31 +1,32 @@
-from __future__ import annotations
 import hashlib
 import hmac
 import os
-import secrets
+
+_ITERATIONS = 120_000
 
 
-def hash_password(password: str, salt: bytes | None = None) -> str:
-    if salt is None:
-        salt = os.urandom(16)
-    if isinstance(password, str):
-        password_bytes = password.encode("utf-8")
-    else:
-        password_bytes = password
-    digest = hashlib.pbkdf2_hmac("sha256", password_bytes, salt, 200_000)
-    return f"{salt.hex()}${digest.hex()}"
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        _ITERATIONS,
+    )
+    return f"pbkdf2_sha256${_ITERATIONS}${salt.hex()}${digest.hex()}"
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     try:
-        salt_hex, digest_hex = password_hash.split("$", 1)
-        salt = bytes.fromhex(salt_hex)
-        expected = bytes.fromhex(digest_hex)
-        candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000)
-        return hmac.compare_digest(candidate, expected)
+        algorithm, iterations, salt_hex, digest_hex = password_hash.split("$")
+        if algorithm != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            bytes.fromhex(salt_hex),
+            int(iterations),
+        )
+        return hmac.compare_digest(digest.hex(), digest_hex)
     except Exception:
         return False
-
-
-def generate_token(length: int = 32) -> str:
-    return secrets.token_urlsafe(length)
