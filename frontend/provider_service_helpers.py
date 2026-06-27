@@ -57,6 +57,7 @@ def update_provider_service(
     price: float,
     duration: int,
     is_active: bool,
+    image_path: str | None = None,
 ):
     def action(session):
         actor = get_actor(session, provider_id)
@@ -69,6 +70,7 @@ def update_provider_service(
             duration_minutes=int(duration),
             price=float(price),
             status=bool_to_service_status(is_active),
+            image_path=image_path,
         )
         return service_to_dict(service)
 

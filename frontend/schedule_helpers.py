@@ -100,6 +100,39 @@ def create_schedule_slot(
     return run_db_action(action)
 
 
+def update_schedule_slot(
+    schedule_id: int,
+    provider_service_ids: list[int],
+    start_datetime: datetime,
+    end_datetime: datetime,
+    is_active: bool,
+):
+    """
+    Update an existing provider slot through ScheduleService.update_slot().
+    The provider_service_ids guard keeps the UI from editing another provider's slot.
+    """
+    def action(session):
+        slot = get_slot_and_validate_provider_services(
+            session=session,
+            schedule_id=schedule_id,
+            provider_service_ids=provider_service_ids,
+        )
+
+        actor = slot.service.provider
+
+        updated_slot = ScheduleService(session).update_slot(
+            actor=actor,
+            slot_id=schedule_id,
+            start_time=start_datetime,
+            end_time=end_datetime,
+            status=SlotStatusEnum.ACTIVE if is_active else SlotStatusEnum.INACTIVE,
+        )
+
+        return slot_to_dict(updated_slot)
+
+    return run_db_action(action)
+
+
 def get_slot_and_validate_provider_services(
     session,
     schedule_id: int,

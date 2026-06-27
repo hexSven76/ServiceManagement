@@ -35,13 +35,18 @@ def get_user_display_name(user) -> str:
 def review_to_dict(review) -> dict:
     customer = get_first_attr(review, ["customer"], None)
 
+    service = get_first_attr(review, ["service"], None)
+    provider = get_first_attr(review, ["provider"], None)
+
     return {
         "id": review.id,
         "booking_id": review.booking_id,
         "customer_id": review.customer_id,
         "customer_name": get_user_display_name(customer),
         "service_id": review.service_id,
+        "service_title": get_first_attr(service, ["title"], f"Service #{review.service_id}") if service else f"Service #{review.service_id}",
         "provider_id": review.provider_id,
+        "provider_name": get_user_display_name(provider) if provider else f"Provider #{review.provider_id}",
         "rating": review.rating,
         "comment": review.comment or "",
         "created_at": review.created_at,
@@ -110,3 +115,47 @@ def format_rating(average_rating: float | int | None, review_count: int | None) 
         return "No reviews yet"
 
     return f"{rating:.1f}/5 ({count} review{'s' if count != 1 else ''})"
+
+def create_customer_review(
+    customer_id: int,
+    booking_id: int,
+    rating: int,
+    comment: str | None = None,
+) -> dict:
+    from frontend.db_actions import get_actor
+
+    def action(session):
+        actor = get_actor(session, customer_id)
+        review = ReviewService(session).create_review(
+            actor=actor,
+            booking_id=booking_id,
+            rating=rating,
+            comment=comment,
+        )
+        return review_to_dict(review)
+
+    return run_db_action(action)
+
+
+def fetch_review_for_booking(booking_id: int) -> dict | None:
+    def action(session):
+        review = ReviewService(session).get_review_for_booking(booking_id)
+        return review_to_dict(review) if review else None
+
+    return run_db_action(action)
+
+
+def fetch_customer_reviews(customer_id: int) -> list[dict]:
+    def action(session):
+        reviews = ReviewService(session).list_reviews_for_customer(customer_id)
+        return [review_to_dict(review) for review in reviews]
+
+    return run_db_action(action)
+
+
+def fetch_provider_reviews(provider_id: int) -> list[dict]:
+    def action(session):
+        reviews = ReviewService(session).list_reviews_for_provider(provider_id)
+        return [review_to_dict(review) for review in reviews]
+
+    return run_db_action(action)

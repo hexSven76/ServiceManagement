@@ -1,26 +1,18 @@
 class AppError(Exception):
-    pass
+    """Base application error shown cleanly in the Streamlit frontend."""
 
 
 class ValidationError(AppError):
-    pass
+    """Raised when user input violates a business rule."""
 
 
 class NotFoundError(AppError):
-    pass
+    """Raised when a requested record does not exist."""
 
 
 class PermissionDeniedError(AppError):
-    pass
-
-
-class ConflictError(AppError):
-    pass
+    """Raised when a user tries to access another role/user's data."""
 
 
 class AuthenticationError(AppError):
-    pass
-
-
-class PaymentError(AppError):
-    pass
+    """Raised for invalid login credentials or inactive accounts."""

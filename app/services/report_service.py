@@ -1,119 +1,58 @@
-from __future__ import annotations
-from pathlib import Path
-from sqlalchemy import select
-from ..exceptions import PermissionDeniedError
-from ..models import Booking, Payment, RoleEnum, User
-from ..utils.pdf_utils import generate_pdf
-from .base import BaseService
+from app.config import REPORT_DIR
+from app.exceptions import NotFoundError, PermissionDeniedError
+from app.models import Booking, Payment, RoleEnum, User
+from app.services.base import BaseService
+from app.services.dashboard_service import DashboardService
+from app.utils.pdf_utils import simple_pdf
 
 
 class ReportService(BaseService):
-    def customer_bookings_pdf(self, actor: User, customer_id: int) -> str:
-        if actor.role not in {RoleEnum.ADMIN, RoleEnum.CUSTOMER}:
-            raise PermissionDeniedError("Not allowed.")
-        if actor.role == RoleEnum.CUSTOMER and actor.id != customer_id:
-            raise PermissionDeniedError("You can only export your own bookings.")
-
-        bookings = list(self.session.execute(
-            select(Booking).where(Booking.customer_id == customer_id).order_by(Booking.created_at.desc())
-        ).scalars().all())
-        rows = [
-            [
-                b.id,
-                b.service.title,
-                b.provider.username,
-                b.slot.start_time.isoformat(sep=" ", timespec="minutes"),
-                b.status.value,
-                b.payment_status.value,
-            ]
-            for b in bookings
-        ]
-        return generate_pdf(
-            filename=f"customer_{customer_id}_bookings.pdf",
-            title="Customer Bookings Report",
-            subtitle=f"Customer ID: {customer_id}",
-            table_headers=["ID", "Service", "Provider", "Time", "Status", "Payment"],
-            rows=rows,
-        )
-
-    def provider_bookings_pdf(self, actor: User, provider_id: int) -> str:
-        if actor.role not in {RoleEnum.ADMIN, RoleEnum.PROVIDER}:
-            raise PermissionDeniedError("Not allowed.")
-        if actor.role == RoleEnum.PROVIDER and actor.id != provider_id:
-            raise PermissionDeniedError("You can only export your own bookings.")
-
-        bookings = list(self.session.execute(
-            select(Booking).where(Booking.provider_id == provider_id).order_by(Booking.created_at.desc())
-        ).scalars().all())
-        rows = [
-            [
-                b.id,
-                b.service.title,
-                b.customer.username,
-                b.slot.start_time.isoformat(sep=" ", timespec="minutes"),
-                b.status.value,
-                b.payment_status.value,
-            ]
-            for b in bookings
-        ]
-        return generate_pdf(
-            filename=f"provider_{provider_id}_bookings.pdf",
-            title="Provider Bookings Report",
-            subtitle=f"Provider ID: {provider_id}",
-            table_headers=["ID", "Service", "Customer", "Time", "Status", "Payment"],
-            rows=rows,
-        )
-
-    def admin_stats_pdf(self, actor: User, stats: dict) -> str:
-        if actor.role != RoleEnum.ADMIN:
-            raise PermissionDeniedError("Only admin can export stats.")
-        rows = []
-        rows.append(["Total Users", stats.get("total_users", 0)])
-        users_by_role = stats.get("users_by_role", {})
-        rows.append(["Admins", users_by_role.get("ADMIN", 0)])
-        rows.append(["Providers", users_by_role.get("PROVIDER", 0)])
-        rows.append(["Customers", users_by_role.get("CUSTOMER", 0)])
-        rows.append(["Total Services", stats.get("total_services", 0)])
-        rows.append(["Active Services", stats.get("active_services", 0)])
-        rows.append(["Inactive Services", stats.get("inactive_services", 0)])
-        rows.append(["Total Bookings", stats.get("total_bookings", 0)])
-        rows.append(["Bookings Today", stats.get("bookings_today", 0)])
-        rows.append(["Bookings Week", stats.get("bookings_week", 0)])
-        rows.append(["Fake Income", stats.get("fake_income", 0)])
-
-        return generate_pdf(
-            filename="admin_stats.pdf",
-            title="Admin Statistics Report",
-            subtitle="System-wide metrics",
-            table_headers=["Metric", "Value"],
-            rows=rows,
-        )
-
-    def receipt_pdf(self, actor: User, booking_id: int) -> str:
+    def receipt_pdf(self, booking_id: int) -> str:
         booking = self.session.get(Booking, booking_id)
-        if not booking:
-            raise ValueError("Booking not found.")
-        if actor.role == RoleEnum.CUSTOMER and actor.id != booking.customer_id:
-            raise PermissionDeniedError("You can only export your own receipt.")
-        if actor.role == RoleEnum.PROVIDER and actor.id != booking.provider_id:
-            raise PermissionDeniedError("You can only export your own receipt.")
-
-        payment = self.session.execute(select(Payment).where(Payment.booking_id == booking_id)).scalar_one_or_none()
-        rows = [
-            ["Booking ID", booking.id],
-            ["Customer", booking.customer.username],
-            ["Provider", booking.provider.username],
-            ["Service", booking.service.title],
-            ["Slot", booking.slot.start_time.isoformat(sep=" ", timespec="minutes")],
-            ["Booking Status", booking.status.value],
-            ["Payment Status", booking.payment_status.value],
-            ["Amount", float(payment.amount) if payment else float(booking.service.price)],
-            ["Payment Reference", payment.payment_reference if payment else "-"],
+        if booking is None:
+            raise NotFoundError("Booking not found.")
+        payment = self.session.query(Payment).filter(Payment.booking_id == booking.id).first()
+        if payment is None:
+            raise NotFoundError("Payment not found for this booking.")
+        lines = [
+            f"Receipt for Booking #{booking.id}",
+            f"Customer: {booking.customer.username}",
+            f"Provider: {booking.provider.username}",
+            f"Service: {booking.service.title}",
+            f"Slot: {booking.slot.start_time} - {booking.slot.end_time}",
+            f"Amount: {payment.amount:,.0f} IRR",
+            f"Payment reference: {payment.payment_reference or '-'}",
+            f"Paid at: {payment.paid_at}",
         ]
-        return generate_pdf(
-            filename=f"receipt_booking_{booking_id}.pdf",
-            title="Payment Receipt",
-            subtitle=f"Booking ID: {booking_id}",
-            table_headers=["Field", "Value"],
-            rows=rows,
-        )
+        return simple_pdf(REPORT_DIR / f"receipt_booking_{booking.id}.pdf", "Payment Receipt", lines)
+
+    def provider_bookings_pdf(self, provider_id: int) -> str:
+        bookings = self.session.query(Booking).filter(Booking.provider_id == provider_id).order_by(Booking.created_at.desc()).all()
+        lines = [
+            f"Booking #{b.id} | {b.customer.username} | {b.service.title} | {b.status.value} | {b.payment_status.value} | {b.slot.start_time}"
+            for b in bookings
+        ] or ["No bookings found."]
+        return simple_pdf(REPORT_DIR / f"provider_{provider_id}_bookings.pdf", "Provider Bookings", lines)
+
+    def customer_bookings_pdf(self, customer_id: int) -> str:
+        bookings = self.session.query(Booking).filter(Booking.customer_id == customer_id).order_by(Booking.created_at.desc()).all()
+        lines = [
+            f"Booking #{b.id} | {b.provider.username} | {b.service.title} | {b.status.value} | {b.payment_status.value} | {b.slot.start_time}"
+            for b in bookings
+        ] or ["No bookings found."]
+        return simple_pdf(REPORT_DIR / f"customer_{customer_id}_bookings.pdf", "Customer Bookings", lines)
+
+    def admin_stats_pdf(self) -> str:
+        stats = DashboardService(self.session).admin_stats()
+        lines = [
+            f"Total users: {stats['total_users']}",
+            f"Total bookings: {stats['total_bookings']}",
+            f"Today bookings: {stats['today_bookings']}",
+            f"Week bookings: {stats['week_bookings']}",
+            f"Total services: {stats['total_services']}",
+            f"Fake income: {stats['fake_income']:,.0f} IRR",
+            f"Users by role: {stats['users_by_role']}",
+            f"Services by status: {stats['services_by_status']}",
+            f"Top services: {stats['top_services']}",
+        ]
+        return simple_pdf(REPORT_DIR / "admin_stats.pdf", "Admin Statistics", lines)
